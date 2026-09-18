@@ -1115,10 +1115,11 @@ fn value_of(v: &str) -> String {
 
 /// The yaml's skip flags are what the chain justifies at each stop block: the swap venue is
 /// paused through the first test's range (both skips true) and quotes in the second (simulation
-/// on, execution off until the executor lands); the lever-up venue is paused at both stop blocks
-/// (simulation off; leverage stays paused until 51433699, and after the unpause `previewLever`
-/// still refuses every size, `SpreadUnavailable`: the keeper has never posted a spread), and
-/// both tests span the creation block.
+/// and execution on: the harness runs the quoted sizes through the `FLAMMExecutor` it holds under
+/// `flamm`); the lever-up venue is paused at both stop blocks (simulation off, and execution with
+/// it; leverage stays paused until 51433699, and after the unpause `previewLever` still refuses
+/// every size, `SpreadUnavailable`: the keeper has never posted a spread), and both tests span the
+/// creation block.
 #[test]
 fn e2e_yaml_skip_flags_are_truthful() {
     let tests = expected_components_of_yaml();
@@ -1149,7 +1150,11 @@ fn e2e_yaml_skip_flags_are_truthful() {
             .any(|r| r["ok"].as_bool() == Some(true));
         assert!(test.stop_block < LEV_UNPAUSE_BLOCK);
         for c in &test.expected {
-            assert!(c.skip_execution, "{}: execution waits for the executor PR", test.name);
+            assert_eq!(
+                c.skip_execution, c.skip_simulation,
+                "{}: execution is skipped exactly where simulation is",
+                test.name
+            );
             if c.id == lever {
                 assert!(c.skip_simulation, "{}: lever-up is paused on chain", test.name);
                 assert!(grids["lever_up"]
