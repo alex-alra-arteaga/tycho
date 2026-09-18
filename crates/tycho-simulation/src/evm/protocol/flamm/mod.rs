@@ -115,6 +115,9 @@ pub mod state;
 pub mod swap;
 pub mod words;
 
+#[cfg(test)]
+mod tests;
+
 pub use context::{LeverContext, PoolContext, SwapContext};
 pub use decoder::flamm_filter;
 pub use error::FlammError;
