@@ -254,8 +254,7 @@ was written in did not have, so it was not run; the local replay above is what s
 # prerequisites: docker (the Postgres), the `substreams` CLI, `tycho-indexer` on PATH (`cargo install --path
 # crates/tycho-indexer` from the monorepo, or the docker route below), a StreamingFast token
 # (SUBSTREAMS_API_TOKEN; the endpoint https://base-mainnet.streamingfast.io:443 is picked by --chain base), a
-# Base RPC (archive not needed: the harness reads token metadata and, once execution is enabled, forks at the
-# stop block)
+# Base RPC (archive not needed: the harness reads token metadata and forks at the stop block to execute)
 cd protocols/testing
 docker compose up db -d                       # or a local Postgres; each run drops and recreates the database
 export RPC_URL=https://mainnet.base.org       # any Base RPC
@@ -287,11 +286,11 @@ Expected output:
   skipped (`levPaused` at the stop block: leverage stayed paused until 51433699, and since the unpause every
   lever-up still reverts `SpreadUnavailable`, the keeper never having re-posted a spread after the
   `LeverageSpreadHook` constructor's 17500 ppm post aged past `maxSpreadAge = 3600 s`, so no block yet shows
-  the venue quoting; a live spread would make it quotable, which no fixture covers); execution skipped for
-  both until the `FLAMMExecutor` is registered with the harness (`protocols/testing/fixtures/FLAMM.runtime.json`
-  and the `flamm` row of `EXECUTOR_MAPPING` in `protocols/testing/src/execution.rs`, on the execution branch
-  `feat/flamm-execution`): whichever of the two lands second sets the swap component's `skip_execution` to
-  false in `integration_test.tycho.yaml`, and the harness then executes the quoted sizes through the executor.
+  the venue quoting; a live spread would make it quotable, which no fixture covers); the swap component's
+  quoted sizes are executed through the `FLAMMExecutor` the harness holds under `flamm`
+  (`protocols/testing/fixtures/FLAMM.runtime.json`, the `flamm` row of `EXECUTOR_MAPPING` in
+  `protocols/testing/src/execution.rs`) on a fork of the stop block; the lever-up component's execution is
+  skipped with its simulation.
 
 The second test streams ~148k Base blocks (the pool sat paused for ~143k of them); on the hosted stack that is
 minutes of substreams time. A run that fails at the component comparison prints the differing field; one that
