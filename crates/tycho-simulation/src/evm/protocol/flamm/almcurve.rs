@@ -244,8 +244,11 @@ pub fn swap_exact_in(
 }
 
 /// `AlmCurve._stableIn` (`AlmCurve.sol:225-252`): paying the stable leg raises `y` and lowers `x`;
-/// the root is the rightmost `x` whose floored `y` exceeds `y + used` (the predicate flips true ->
-/// false at `hi`).
+/// `y` is non-increasing in `x`, so the root sits where the predicate flips true -> false
+/// (`AlmCurve.sol:280`). The returned `x_after` is `hi`, the right endpoint of the final bracket,
+/// at which the floored `y` no longer exceeds `y + used`. Nothing is claimed about `lo`: when the
+/// fill saturates the leg, `y(lo)` equals the target rather than exceeding it, and `x_after` is
+/// then one step to the right of the leftmost non-exceeding coordinate.
 fn stable_in(
     sup: &Support,
     x_wad: U256,
