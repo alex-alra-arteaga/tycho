@@ -151,8 +151,17 @@ pub fn creation(
     codehash(&config.factory, Role::Factory)?;
 
     // Venue 0: the Morpho Blue account the factory bound (PoolCreated.account), its market from the
-    // calldata.
+    // calldata. `initializeHooks` registers every entry of the array (FLAMMOpsLib.sol:177-179), but
+    // the package models one venue: the event carries venue 0's account alone
+    // (`ROUTER.accountOf(pool, 0, 0)`, FLAMMFactory.sol:245), the static attributes and
+    // `pool_config_from_component` are `venue_0_*`, and `untracked_external_words` can only
+    // name the venues the config carries. A further venue would therefore be indexed with its
+    // Morpho market, position and IRM words untracked and its collateral and recognized supply
+    // missing from the balances, so such a pool is refused until a package update models it.
     let Some(venue0) = call.venues.first() else { bail!("pool has no financing venue") };
+    if call.venues.len() != 1 {
+        bail!("pool has {} financing venues, and the package models one", call.venues.len());
+    }
     if venue0.kind != VENUE_KIND_MORPHO_BLUE {
         bail!("venue 0 kind {} is not Morpho Blue", venue0.kind);
     }
