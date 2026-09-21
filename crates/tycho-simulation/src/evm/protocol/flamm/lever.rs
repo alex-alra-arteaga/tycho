@@ -204,7 +204,7 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
     /// `ILeverageInvariantHook(leverageHook).previewLever(p.ctx)` (`FLAMMLeverLib.sol:100`,
     /// `:128`): the leverage hook's quote over the pool's swap hook's book (`hook_kinds.go`
     /// `everlongLeverageV1.previewLever`: `EverlongHook.bookFor(ctx.pool)` and
-    /// `reservationPriceWad()`, `EverlongLeverageHook.sol:37`, `:48-52`).
+    /// `reservationPriceWad()`, `EverlongLeverageHook.sol:74`, `:77`).
     fn lever_fill(&self, ctx: &LeverContext) -> Result<LevFill, FlammError> {
         let lev = self.hooks.leverage.port()?;
         let swap = self.hooks.swap.port()?;
