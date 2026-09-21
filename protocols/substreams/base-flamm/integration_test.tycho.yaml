@@ -8,9 +8,16 @@ module_name: "map_protocol_changes"
 # router's, account's, price feed's and factory's storage words, the Morpho Blue market and position words, the
 # IRM rate, and the Chainlink rounds), decoded by the `flamm` ProtocolSim in tycho-simulation. No VM adapter.
 
-# Component balances are the pool's tradable inventory as the contracts count it (physical cbBTC plus the
-# collateral posted on Morpho; liquid USDC plus the recognized Morpho supply), not the pool contract's ERC-20
-# balances: a sell borrows USDC on Morpho and posts cbBTC there, so the pool's own balance is not its inventory.
+# Two grounds, each on its own sufficient. First, the harness reads every component id as a contract address
+# and calls `balanceOf` on it (`validate_token_balances`: `Address::from_str(id).expect("Failed to parse
+# component address")`), and the lever-up component's id is not an address: it is 32 bytes, the pool address
+# followed by a venue discriminator (`lever_up_component_id`). With the check on, that component does not fail
+# it, it panics the harness before any balance is read. Second, component balances are the pool's tradable
+# inventory as the contracts count it (physical cbBTC plus the collateral posted on Morpho; liquid USDC plus
+# the recognized Morpho supply), not the pool contract's ERC-20 balances: a sell borrows USDC on Morpho and
+# posts cbBTC there, so the pool's own balance is not its inventory. What the harness cannot check the package
+# asserts against the contracts' own views instead (`swap_block_updates_the_words_the_fill_moved_and_the_inventory`
+# against `testdata/snapshot_51302915.json`).
 skip_balance_check: true
 
 tests:
