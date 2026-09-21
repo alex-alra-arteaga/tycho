@@ -56,6 +56,45 @@ impl FLAMMSwapEncoder {
             _ => Err(EncodingError::FatalError(format!("Invalid FLAMM component id {id}"))),
         }
     }
+
+    /// Refuses a lever-up pair the executor will not accept.
+    ///
+    /// The leverage venue is one-directional: pool asset in, loan asset 0 out.
+    /// `FLAMMExecutor._requireLeverUpPair` (`contracts/src/executors/FLAMMExecutor.sol:151-163`)
+    /// reads `pool.asset()` and `pool.loanAsset()` and reverts every other pair —
+    /// `FLAMMExecutor__LeverDownUnsupported` for the reverse, `FLAMMExecutor__InvalidLeverPair`
+    /// for a foreign one — before the venue calls `leverUp`, which ignores `tokenIn`/`tokenOut`
+    /// altogether (`:119-120`). Such calldata can therefore only burn gas, so it is refused here.
+    ///
+    /// The component carries the pair in the executor's own order, `[pool asset, loan asset 0,
+    /// ...]` (`protocols/substreams/base-flamm/src/flamm/mod.rs:150-154`). A component that
+    /// carries no pair cannot be checked at all, so it is refused rather than encoded blind.
+    fn require_lever_up_pair(swap: &Swap) -> Result<(), EncodingError> {
+        let tokens = &swap.component().tokens;
+        let (pool_asset, loan_asset) = match tokens.as_slice() {
+            [pool_asset, loan_asset, ..] => (pool_asset, loan_asset),
+            _ => {
+                return Err(EncodingError::FatalError(format!(
+                    "FLAMM lever-up component {} must carry its [pool asset, loan asset 0] pair",
+                    swap.component().id
+                )))
+            }
+        };
+        let token_in = &swap.token_in().address;
+        let token_out = &swap.token_out().address;
+        if token_in == pool_asset && token_out == loan_asset {
+            return Ok(());
+        }
+        if token_in == loan_asset && token_out == pool_asset {
+            return Err(EncodingError::InvalidInput(format!(
+                "FLAMM lever-down is not supported: {token_in} -> {token_out}"
+            )));
+        }
+        Err(EncodingError::InvalidInput(format!(
+            "FLAMM lever-up token pair mismatch: {token_in} -> {token_out} is not \
+             {pool_asset} -> {loan_asset}"
+        )))
+    }
 }
 
 impl SwapEncoder for FLAMMSwapEncoder {
@@ -78,6 +117,11 @@ impl SwapEncoder for FLAMMSwapEncoder {
         _encoding_context: &EncodingContext,
     ) -> Result<Vec<u8>, EncodingError> {
         let (pool, venue) = Self::decode_component_id(&swap.component().id)?;
+        if venue == VENUE_LEVER_UP {
+            // The swap venue takes either direction and the pool checks the pair itself; the
+            // leverage venue takes one, and the executor checks it on chain.
+            Self::require_lever_up_pair(swap)?;
+        }
         // FLAMM pairs are ERC-20 only (cbBTC/USDC), so no native-token translation.
         let token_in = bytes_to_address(&swap.token_in().address)?;
         let token_out = bytes_to_address(&swap.token_out().address)?;
@@ -111,12 +155,26 @@ mod tests {
     const POOL: &str = "0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572";
     const CBBTC: &str = "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf";
     const USDC: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+    const WETH: &str = "0x4200000000000000000000000000000000000006";
 
     fn component(id: &str) -> ProtocolComponent {
         ProtocolComponent {
             id: id.to_owned(),
             protocol_system: "flamm".to_owned(),
             ..Default::default()
+        }
+    }
+
+    fn lever_up_id() -> String {
+        format!("{POOL}000000000000000000000001")
+    }
+
+    /// A lever-up component: the discriminator in the id, and the `[pool asset, loan asset 0]`
+    /// pair the executor checks `tokenIn` / `tokenOut` against.
+    fn lever_up_component() -> ProtocolComponent {
+        ProtocolComponent {
+            tokens: vec![Bytes::from(CBBTC), Bytes::from(USDC)],
+            ..component(&lever_up_id())
         }
     }
 
@@ -179,8 +237,7 @@ mod tests {
 
     #[test]
     fn test_encode_flamm_lever_up() {
-        let id = format!("{POOL}000000000000000000000001");
-        let hex_swap = pack(component(&id), CBBTC, USDC).unwrap();
+        let hex_swap = pack(lever_up_component(), CBBTC, USDC).unwrap();
         assert_eq!(
             hex_swap,
             concat!(
@@ -191,6 +248,38 @@ mod tests {
             )
         );
         write_calldata_to_file("test_encode_flamm_lever_up", hex_swap.as_str());
+    }
+
+    /// `FLAMMExecutor__LeverDownUnsupported`: the reverse pair on the leverage venue reverts on
+    /// chain (`contracts/test/protocols/FLAMM.t.sol::testLeverDownIsUnsupported`), so it is not
+    /// encodable.
+    #[test]
+    fn test_encoder_rejects_lever_down() {
+        let err = pack(lever_up_component(), USDC, CBBTC).unwrap_err();
+        assert!(matches!(err, EncodingError::InvalidInput(ref msg) if msg.contains("lever-down")));
+        // The swap venue takes both directions.
+        assert!(pack(component(POOL), USDC, CBBTC).is_ok());
+    }
+
+    /// `FLAMMExecutor__InvalidLeverPair`: neither leg of a lever-up may be a foreign token
+    /// (`contracts/test/protocols/FLAMM.t.sol::testLeverUpRejectsForeignPair`).
+    #[test]
+    fn test_encoder_rejects_foreign_lever_pair() {
+        for (token_in, token_out) in [(CBBTC, WETH), (WETH, USDC), (WETH, CBBTC)] {
+            let err = pack(lever_up_component(), token_in, token_out).unwrap_err();
+            assert!(
+                matches!(err, EncodingError::InvalidInput(ref msg) if msg.contains("pair mismatch")),
+                "{token_in} -> {token_out}: {err:?}"
+            );
+        }
+    }
+
+    /// A lever-up component with no token pair cannot be checked against `pool.asset()` /
+    /// `pool.loanAsset()`, so it is refused rather than encoded blind.
+    #[test]
+    fn test_encoder_rejects_lever_up_without_component_tokens() {
+        let err = pack(component(&lever_up_id()), CBBTC, USDC).unwrap_err();
+        assert!(matches!(err, EncodingError::FatalError(ref msg) if msg.contains("pool asset")));
     }
 
     #[test]
