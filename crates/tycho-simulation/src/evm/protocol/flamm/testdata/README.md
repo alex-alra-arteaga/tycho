@@ -4,20 +4,27 @@ Solidity-generated fixtures the `flamm` module's parity tests (`../tests/`) repl
 wei and by revert class, with no sampling and no tolerance. Sections 1-4 are a selection of the
 fixtures of the Go simulator of the same pool (`kyberswap-dex-lib`
 `pkg/liquidity-source/everlong/flamm/testdata`, whose `README.md` and `gen/` directory hold the full
-provenance and every generator); the files there are byte-identical copies, so their stored digests
-below are the ones that README pins. Section 5 holds the deployed pool's own component snapshots and
-`eth_call` answers, read from Base for the `ProtocolSim` tests.
+provenance and every generator); the files here are copies of the files there, byte-identical but for
+`hook_live_swap`, which is the same bytes gzipped (the Go port keeps it as plain JSON), so their
+stored digests below are the ones that README pins. Section 5 holds the deployed pool's own component
+snapshots and `eth_call` answers, read from Base for the `ProtocolSim` tests.
+
+**Where the generators are.** The Foundry generators of sections 1-4 are not committed in this tree.
+They are the Go port's, and are written below as `<port>/gen/<file>` for
+`kyberswap-dex-lib`, `pkg/liquidity-source/everlong/flamm/testdata/gen/<file>`; this tree's own `gen/`
+directory holds only the Python recorders of sections 5 and 6, which have their own README and
+per-script digests.
 
 ## Common provenance
 
 - Solidity source of truth: the c104 tree at commit `80abd43` (`80abd43dc4ea53fe612e6267a471f2937fc29f9c`),
   as deployed on Base (chain 8453): pool `0xc0fdCB1799cCc2CEBaA1fe247157b0dF33D57572`, swap hook
   `EverlongHook 0x65CBD227cBC61248ae77a5fC813A29C54C092134`, leverage hook `EverlongLeverageHook
-  0xE0A98d8e60035832B8BaD7f7af7B9B0b3A7308F3`, `CollRebalancerMath 0xC002d0731E6a2E6e80Be754779bCEf6B01Aff0bb`,
+  0xE0A98d8e60035832B8BaD7f7af7B9B0b3A7308F3`, `CollRebalancerMath 0xc002d0731e6A2E6e80bE754779BCef6B01aFF0BB`,
   `AlmCurve 0xf82DdF0A8a50bc2C3F163997766bA1839E527A17`, `MMRouter 0x19A9…6bB4`, `MorphoBlueAccount
   0x6760…6c48`, `AdaptiveCurveIrm 0x46415998764C29aB2a25CbeA6254146D50D22687`. Foundry 1.7.1.
-- Generators are Foundry tests named below as `gen/<file>`; each is copied into `test/kyber/` of a c104
-  checkout at that commit and run from the tree root with the command quoted in the Go port's README
+- Generators are Foundry tests named below as `<port>/gen/<file>`; each is copied into `test/kyber/` of a
+  c104 checkout at that commit and run from the tree root with the command quoted in the Go port's README
   (`FOUNDRY_SPARSE_MODE=true forge test --match-path test/kyber/<Generator>.t.sol -vv --gas-limit
   9223372036854775807`, `--via-ir` where the writer needs it, `--isolate` for the sequences). Fork
   generators read Base over RPC at the block named per fixture. Re-runs are byte-identical.
@@ -35,9 +42,9 @@ below are the ones that README pins. Section 5 holds the deployed pool's own com
 
 ## 1. Swap hook: `AlmCurve`, `EverlongStrategy.fillFee`, `EverlongHook` fill (`tests/swap_hook.rs`)
 
-Generators: `gen/AlmCurveGrid.t.sol`, `gen/FeeFillGrid.t.sol`, `gen/HookFillGrid.t.sol`,
-`gen/HookLiveSwapTrace.t.sol`; edges: `gen/SwapHookEdgesBase.sol`, `gen/AlmCurveEdges.t.sol`,
-`gen/FeeEdges.t.sol`, `gen/HookFillEdges.t.sol`.
+Generators: `<port>/gen/AlmCurveGrid.t.sol`, `<port>/gen/FeeFillGrid.t.sol`, `<port>/gen/HookFillGrid.t.sol`,
+`<port>/gen/HookLiveSwapTrace.t.sol`; edges: `<port>/gen/SwapHookEdgesBase.sol`, `<port>/gen/AlmCurveEdges.t.sol`,
+`<port>/gen/FeeEdges.t.sol`, `<port>/gen/HookFillEdges.t.sol`.
 
 - `alm_curve_grid` forks Base at block 51310000 and calls the deployed `AlmCurve` library (`supportFor`,
   `reservesAt`, `swapExactInX96`; `yAtX` read through `reservesAt` on a full-domain support, `priceAtX`
@@ -77,12 +84,12 @@ Generators: `gen/AlmCurveGrid.t.sol`, `gen/FeeFillGrid.t.sol`, `gen/HookFillGrid
 
 ## 2. Financing: Morpho Blue, `AdaptiveCurveIrm`, `MorphoBlueAccount`, `MMRouterLib`, `FLAMMGateLib` (`tests/financing/`)
 
-Generators: `gen/GateMathFixture.t.sol`, `gen/MMFixtureBase.sol`, `gen/MMFinancingFixture.t.sol`
-(module fixtures); `gen/FinancingEdgesBase.sol` and `gen/{Morpho,Account,Router,Gate,Settle}Edges.t.sol`
-(edges); `gen/GateIntEdges.t.sol` (integer edges); `gen/RouterSettlementEdgesBase.sol`,
-`gen/RouterSettlementEdges.t.sol`, `gen/MorphoMarketEdges.t.sol` (settlement edges);
-`gen/FinancingSequenceBase.sol`, `gen/RouterSequences.t.sol`, `gen/SwapSettlementSequences.t.sol`,
-`gen/MorphoAccrualGrid.t.sol` (sequences, `--isolate`). All fork Base at block 51317000 except
+Generators: `<port>/gen/GateMathFixture.t.sol`, `<port>/gen/MMFixtureBase.sol`, `<port>/gen/MMFinancingFixture.t.sol`
+(module fixtures); `<port>/gen/FinancingEdgesBase.sol` and `<port>/gen/{Morpho,Account,Router,Gate,Settle}Edges.t.sol`
+(edges); `<port>/gen/GateIntEdges.t.sol` (integer edges); `<port>/gen/RouterSettlementEdgesBase.sol`,
+`<port>/gen/RouterSettlementEdges.t.sol`, `<port>/gen/MorphoMarketEdges.t.sol` (settlement edges);
+`<port>/gen/FinancingSequenceBase.sol`, `<port>/gen/RouterSequences.t.sol`, `<port>/gen/SwapSettlementSequences.t.sol`,
+`<port>/gen/MorphoAccrualGrid.t.sol` (sequences, `--isolate`). All fork Base at block 51317000 except
 `gate_math` (a harness with a mock router and feed) and the integer edges (no fork); the `mm_*` and
 `edges/` runs write storage into the DEPLOYED Morpho Blue, `AdaptiveCurveIrm`, `MorphoBlueAccount` and
 `MMRouter`, and the settlement runs DELEGATECALL the libraries the deployed pool implementation links
@@ -149,15 +156,15 @@ Generators: `gen/GateMathFixture.t.sol`, `gen/MMFixtureBase.sol`, `gen/MMFinanci
   semantics of `test/flamm/lev/CollRebalancerMathLevCurveParity.t.sol` @ `80abd43`; it is the one
   fixture whose rows reach the curve's pro-rata branch (`PRORATA_CROSSING` 3102, `PRORATA_DUST_GUARD`
   194, `PRORATA_NO_CAPPED_PORTION` 185, `LIVENESS_EXCLUSION` 108, `EXACT` 18876).
-- Generators `gen/LevRecorder.sol`, `gen/LevGoldenFixture.t.sol` (the local LevBase stack:
+- Generators `<port>/gen/LevRecorder.sol`, `<port>/gen/LevGoldenFixture.t.sol` (the local LevBase stack:
   `lev_hook_local_fixture`, the VenueGolden sequence plus displaced and synthetic grids;
-  `lev_hook_band_fixture`, `_assertAnchorAndBand` through a harness) and `gen/LevForkFixture.t.sol` (a
+  `lev_hook_band_fixture`, `_assertAnchorAndBand` through a harness) and `<port>/gen/LevForkFixture.t.sol` (a
   Base fork at block 51317000 against the deployed stack: `lev_hook_fork_fixture`, frame /
   `previewLever` / `pool.previewLever` with the `LeverContext` captured by a calldata-echo probe;
   `lev_curve_fork_fixture`, `frozenParams()` and a `leverageQuote` / `deleverageQuote` / `anchorAndBase`
   / `isStateSafe` grid plus a keccak-seeded sweep on the deployed `CollRebalancerMath`).
-- `edges/lev_curve_edges` (`gen/LevEdgeRows.sol`, `gen/LevCurveEdgesHarness.sol`,
-  `gen/LevCurveEdges.t.sol`, `gen/lev_curve_math_copy.py`; a Base fork at block 51318000): 77,002 rows
+- `edges/lev_curve_edges` (`<port>/gen/LevEdgeRows.sol`, `<port>/gen/LevCurveEdgesHarness.sol`,
+  `<port>/gen/LevCurveEdges.t.sol`, `<port>/gen/lev_curve_math_copy.py`; a Base fork at block 51318000): 77,002 rows
   `[op, inputs, [status, words...]]` on the deployed library over branch thresholds, `MAX_INPUT` and
   `uint256` edges, exact `Mul512` ties, off-chain rounding ties and a keccak-seeded grid; every public
   row re-run on a verbatim internal-visibility copy that also supplies the private-helper rows.
@@ -173,9 +180,9 @@ Generators: `gen/GateMathFixture.t.sol`, `gen/MMFixtureBase.sol`, `gen/MMFinanci
 
 ## 4. Pool core end to end: `FLAMMSwapLib`, `FLAMMLeverLib`, `PriceFeed` over the composed state (`tests/core/`)
 
-Generators: `gen/CoreE2EBase.sol`, `gen/CoreE2EGrid.t.sol`, `gen/CoreE2ESeq.t.sol` (Base forks at
-blocks 51302915, the parent of the pool's first settled swap, 51313000 and 51324800); `gen/CoreEdgesBase.sol`,
-`gen/CoreEdgeGrid.t.sol`, `gen/CoreEdgeSeq.t.sol` (forks at 51302915, 51324800 and 51326000, written
+Generators: `<port>/gen/CoreE2EBase.sol`, `<port>/gen/CoreE2EGrid.t.sol`, `<port>/gen/CoreE2ESeq.t.sol` (Base forks at
+blocks 51302915, the parent of the pool's first settled swap, 51313000 and 51324800); `<port>/gen/CoreEdgesBase.sol`,
+`<port>/gen/CoreEdgeGrid.t.sol`, `<port>/gen/CoreEdgeSeq.t.sol` (forks at 51302915, 51324800 and 51326000, written
 without the first set: own interfaces, own state dump, own scenario logic). JSON lines. Every state row
 is one complete state read the way the tracker reads it (view getters plus the three storage words no
 view exposes: `FLAMMStore.lastLeverSpreadPpm` at ERC-7201 base + 22 bits 160..191, and the Router
@@ -222,12 +229,12 @@ to break.
 
 | generator | sha256 |
 | --- | --- |
-| `gen/CoreE2EBase.sol` | `e577daaa6e2417722ba30a10511c1493c8a3e954763bf9495a65e2afd24716e7` |
-| `gen/CoreE2EGrid.t.sol` | `37415f13b103fbbee629fce208ca290cdfa838a2c9a2783d32a5ea53a57584ee` |
-| `gen/CoreE2ESeq.t.sol` | `b9df18f342862aa0823c7686ef73ae95ebf08d9631c1ec28cfcba9c99f851ef3` |
-| `gen/CoreEdgesBase.sol` | `5e159ca61ddd51e8c6af9d7e90da40cadd898c9dee83d16abb784c8605d24aa5` |
-| `gen/CoreEdgeGrid.t.sol` | `f83a5c6499080e394ba5b06ae08e5f620273718f69470556e4084dde44bdb487` |
-| `gen/CoreEdgeSeq.t.sol` | `66558762467d92a309f13acb6834b1c938ce2864cc4549edb9e07338aac02363` |
+| `<port>/gen/CoreE2EBase.sol` | `e577daaa6e2417722ba30a10511c1493c8a3e954763bf9495a65e2afd24716e7` |
+| `<port>/gen/CoreE2EGrid.t.sol` | `37415f13b103fbbee629fce208ca290cdfa838a2c9a2783d32a5ea53a57584ee` |
+| `<port>/gen/CoreE2ESeq.t.sol` | `b9df18f342862aa0823c7686ef73ae95ebf08d9631c1ec28cfcba9c99f851ef3` |
+| `<port>/gen/CoreEdgesBase.sol` | `5e159ca61ddd51e8c6af9d7e90da40cadd898c9dee83d16abb784c8605d24aa5` |
+| `<port>/gen/CoreEdgeGrid.t.sol` | `f83a5c6499080e394ba5b06ae08e5f620273718f69470556e4084dde44bdb487` |
+| `<port>/gen/CoreEdgeSeq.t.sol` | `66558762467d92a309f13acb6834b1c938ce2864cc4549edb9e07338aac02363` |
 
 ## 5. The deployed pool's component snapshots and previews (`tests/protocol_sim.rs`)
 
@@ -243,7 +250,9 @@ Read from Base over public JSON-RPC (`https://mainnet.base.org`; `eth_getStorage
   `hook:` / `spread:` / `router:` / `account:` / `pricefeed:` / `factory:` `<slot key>`, the value
   `eth_getStorageAt` returns), the 6 Morpho Blue and `AdaptiveCurveIrm` words (`mm:0:*`,
   `irm:0:rate_at_target`), and the four Chainlink feeds decoded from the proxies' and aggregators'
-  storage (`feed:<f>:*`, the `DualAggregator`'s 21-round ring as `feed:mo0:tx:<round>`), plus the
+  storage (`feed:<f>:*`, the `DualAggregator`'s ring as `feed:mo0:tx:<round>`: the 21-round window
+  `latest-20 ..= latest`, a one-round superset of the 20 rounds `_getSyncPrimaryRound` visits, plus
+  the secondary round when it has fallen below the window, which it has not at this block), plus the
   `feed:<f>:kind` of each aggregator. The 147 schema attributes were produced by the schema
   snapshot tool of the native-integration design and every one verified against the contracts'
   own views at the same block (the substreams' `testdata/snapshot_51302915.json` is the same
@@ -278,8 +287,11 @@ every script and its digest). The tests decode each of the three snapshots throu
 `ProtocolSim` a quote for a full fill, a typed refusal for a clipped size or a revert above the
 limit, and the empty trade for a revert at or below it, a buy's dust), locate the limits and check
 the contract below them (the 0.1% / 1% / 10% sizes the protocol test harness quotes fill in full;
-every sell fills from one sat; the buys the chain refused below the limit are dust of at most 5000
-USDC units, not an interval, below a hundredth of a percent of the limit, quoted as nothing),
+every sell fills from one sat at these three blocks, at all of which the pool is unpaused; the buys
+the chain refused below the limit are dust, not an interval, quoted as nothing, and bounded
+absolutely rather than as a fraction of the limit — at most 5000 USDC units in the recorded grid, and
+7,683 / 6,888 / 9,122 units when every size is scanned, which is a hundredth of a percent of the
+limit only because the buy limit here is 165M to 391M units),
 check `spot_price` in the trait's definition against the hook's recorded `spot` and the margin of
 a small quote in the buying direction, run `query_pool_swap` in both directions (a limit between
 the max-size and the zero-size execution price is met inside the limit; one above the zero-size
