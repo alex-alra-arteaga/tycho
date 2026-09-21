@@ -18,6 +18,11 @@
   "venue_0_oracle_quote_vault": "0x0000000000000000000000000000000000000000000000000000000000000000"
  },
  "irm_codehash": "0x9978b522abfe0f3b8279800375d833b9d9660ae4f6321a2efb1f1f98850a0cbe",
- "dual_code_has_secondary_proxy": true,
- "dual_code_push32_20_count": 2
+ "dual_code": {
+  "aggregator": "0xe5ec87a39445b8d5b751b116802a53c5ae7e9df1",
+  "i_secondaryProxy": "0x00000000000000000000000064c911996d3c6ac71f9b455b1e8e7266bcbd848f",
+  "i_secondaryProxy_sites": ["0x319d"],
+  "i_maxSyncIterations": "0x0000000000000000000000000000000000000000000000000000000000000014",
+  "i_maxSyncIterations_sites": ["0x3d5e", "0x3ff2"]
+ }
 }

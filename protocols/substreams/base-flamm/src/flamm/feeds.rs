@@ -159,10 +159,14 @@ pub fn dual_hotvars(hotvars: &Word) -> (u32, u32) {
     (field(hotvars, 6, 4) as u32, field(hotvars, 10, 4) as u32)
 }
 
-/// The rounds the secondary-path reveal can answer with: `latest-DUAL_RING..=latest` and the
-/// secondary round. `_getSyncPrimaryRound` (`DualAggregator.sol:530-548`) visits `latest` down
-/// to `latest-19` (it breaks when `latest - round == i_maxSyncIterations = 20`), so the window
-/// is a deliberate superset by one round; the seeds and the schema snapshot carry these 21.
+/// The rounds the package keeps for a `DualAggregator`: the window `latest-DUAL_RING..=latest`,
+/// plus the secondary round when it has fallen below the window. A deliberate superset of the
+/// rounds a reveal can answer with, not that set itself: `_getSyncPrimaryRound`
+/// (`DualAggregator.sol:530-548`) visits `latest` down to `latest-19` (it breaks when
+/// `latest - round == i_maxSyncIterations = 20`), and the secondary-proxy branch answers with
+/// `latestSecondaryRoundId`, so `latest-20` is carried although nothing but the secondary round
+/// reaches it. The window is 21 rounds and the set is 22 while the secondary round is outside it;
+/// the seeds and the schema snapshot are both taken where it is inside, and carry 21.
 pub const DUAL_RING: u32 = 20;
 
 pub fn dual_ring(latest: u32, secondary: u32) -> Vec<u32> {
@@ -313,6 +317,11 @@ mod tests {
         assert_eq!(dual_hotvars(&dual), (0xbcb, 0xbc9));
         assert_eq!(dual_ring(0xbcb, 0xbc9).len(), 21);
         assert_eq!(dual_ring(0xbcb, 0xbc9)[0], 0xbcb - 20);
+        // A secondary round that has fallen below the window is carried beside it: 22 rounds, and
+        // `latest - 20` stays in the set whether or not a reveal can reach it.
+        let below = dual_ring(0xbcb, 0xbcb - 21);
+        assert_eq!(below.len(), 22);
+        assert_eq!(below[..2], [0xbcb - 21, 0xbcb - 20]);
         assert_eq!(dual_ring(5, 0), vec![1, 2, 3, 4, 5]);
 
         let phase =

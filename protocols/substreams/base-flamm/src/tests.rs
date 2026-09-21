@@ -23,7 +23,7 @@ use crate::{
         },
         statics,
         words::{block_writes, deployments_in_block, WordView},
-        PoolConfig, Role,
+        PoolConfig, Role, VenueConfig,
     },
     modules::{components_in_block, protocol_changes, tracked_writes},
     testdata::{self, address, fixture, hex_bytes, hex_u64, synthetic_ring, word, words_map},
@@ -194,12 +194,22 @@ fn manifest_params_are_the_fixture_values() {
         assert_eq!(pin, &expected, "{name}");
     }
     assert_eq!(pinned["irm_codehash"], hex_bytes(&views["irm_codehash"]));
+    // Two of the thirteen have no getter to call: `i_secondaryProxy` and `i_maxSyncIterations` are
+    // `internal immutable`, so solc emits no accessor and inlines them into the runtime code. Both
+    // are pinned against the values a PUSH walk of `eth_getCode(DualAggregator, 51154990)` reads at
+    // the sites that use them (`testdata/README.md` records the walk and the sites).
+    let dual = &views["dual_code"];
+    let dual_aggregator = parse_address(dual["aggregator"].as_str().unwrap()).unwrap();
+    assert!(matches!(cfg.aggregators.get(&dual_aggregator), Some(FeedKind::Dual)));
+    assert_eq!(pinned["feed_mo0_secondary_proxy"], hex_bytes(&dual["i_secondaryProxy"])[12..]);
+    assert_eq!(pinned["feed_mo0_max_sync_iterations"], hex_bytes(&dual["i_maxSyncIterations"]));
+    assert_eq!(pinned["feed_mo0_max_sync_iterations"], keys::word_from_u64(20).to_vec());
+    // and the mo0 feed is that same secondary proxy: it is the base feed of venue 0's Morpho
+    // oracle, which is what puts the pool's Morpho valuation on the secondary reveal path.
     assert_eq!(
         pinned["feed_mo0_secondary_proxy"],
         hex_bytes(&views["views"]["venue_0_oracle_base_feed_1"])[12..]
     );
-    assert_eq!(pinned["feed_mo0_max_sync_iterations"], keys::word_from_u64(20).to_vec());
-    assert_eq!(views["dual_code_has_secondary_proxy"], Value::Bool(true));
     for name in statics::REQUIRED_IMMUTABLES {
         assert!(pinned.contains_key(name), "{name}");
     }
@@ -625,6 +635,75 @@ fn creation_is_refused_without_allowlist_registry_or_immutables() {
     let untracked = statics::untracked_external_words(&pool, &cfg, &view, 0);
     assert_eq!(untracked, vec!["feed:mo0:kind (0xe5ec87a39445b8d5b751b116802a53c5ae7e9df1)"]);
     assert!(statics::untracked_external_words(&pool, &config(), &view, 0).is_empty());
+}
+
+/// `createPool`'s `venues` array can carry more than one entry (`initializeHooks` registers each of
+/// them, FLAMMOpsLib.sol:177-179). The package models one venue, so a pool with a second one is
+/// refused rather than indexed without it: the gate names untracked words for the venues the config
+/// carries, so it is blind to a venue the config never held.
+#[test]
+fn creation_is_refused_for_a_pool_with_a_second_financing_venue() {
+    let creation = fixture("creation");
+    let block = testdata::fixture_block(&creation, vec![]);
+    let tx = &block.transaction_traces[0];
+    let log = tx
+        .receipt
+        .as_ref()
+        .unwrap()
+        .logs
+        .iter()
+        .find(|l| l.topics.first().map(Vec::as_slice) == Some(&POOL_CREATED_TOPIC))
+        .unwrap();
+    let event = calldata::decode_pool_created(&log.topics, &log.data).unwrap();
+    let live = calldata::decode_create_pool(&tx.input).unwrap();
+    assert_eq!(live.venues.len(), 1, "the live pool was created with one venue");
+    let cfg = config();
+    let deployments = deployments();
+    let deployment = |a: &Address| deployments.get(a).copied();
+    let before = words_map(&creation["words_before"]);
+    let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
+    let writes = block_writes(&block, |_, _| true);
+    let view = WordView::new(&writes, first_word, &cfg.words);
+    // A second Morpho Blue venue: venue 0's `MarketParams` with one bit of the lltv flipped, so a
+    // distinct market id and a distinct set of Morpho and IRM words.
+    let mut second = live.venues[0].clone();
+    let lltv_low = second.venue_params.len() - 1;
+    second.venue_params[lltv_low] ^= 0x01;
+    assert_ne!(second.market_id(), live.venues[0].market_id());
+    let mut two = live.clone();
+    two.venues.push(second.clone());
+    let err = statics::creation(&event, &two, &cfg, &deployment, &view, tx.index as u64)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("2 financing venues"), "{err}");
+    // The live pool is accepted and its gate is empty, but the same gate over a config that carries
+    // the second venue names every word the package would have had to track for it.
+    let created =
+        statics::creation(&event, &live, &cfg, &deployment, &view, tx.index as u64).unwrap();
+    assert_eq!(created.config.venues.len(), 1);
+    assert!(
+        statics::untracked_external_words(&created.config, &cfg, &view, tx.index as u64).is_empty()
+    );
+    let params = second.market_params().unwrap();
+    let mut both = created.config.clone();
+    both.venues.push(VenueConfig {
+        account: created.config.venues[0].account,
+        market_id: second.market_id(),
+        morpho: created.config.venues[0].morpho,
+        irm: params.irm,
+        oracle: params.oracle,
+    });
+    assert_eq!(
+        statics::untracked_external_words(&both, &cfg, &view, tx.index as u64),
+        [
+            "mm:1:market:0",
+            "mm:1:market:1",
+            "mm:1:market:2",
+            "mm:1:position:0",
+            "mm:1:position:1",
+            "irm:1:rate_at_target",
+        ]
+    );
 }
 
 /// A pool created without the leverage pair (`HookSet.leverageHook == spreadHook == 0`, valid
