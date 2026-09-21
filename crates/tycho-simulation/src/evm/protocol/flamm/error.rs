@@ -18,8 +18,9 @@
 //! [`FlammError::from_revert_data`] classifies raw revert data the way the fixture generators
 //! recorded it: empty data is OpenZeppelin 4.8 `Math.mulDiv`'s bare `require(denominator > prod1)`;
 //! a 36-byte `Panic(uint256)` is a Solidity panic (0x11 checked arithmetic, 0x12 division by zero,
-//! 0x32 index out of bounds); a 4-byte word is a custom-error selector; an `Error(string)` payload
-//! is one of Morpho Blue's `ErrorsLib` strings.
+//! 0x32 index out of bounds); an `Error(string)` payload is one of Morpho Blue's `ErrorsLib`
+//! strings; anything else is read as a custom-error selector followed by whatever arguments the
+//! error declares, so a parameterised error classifies at the length the chain reverts with.
 
 use std::fmt;
 
@@ -539,30 +540,35 @@ impl FlammError {
 
     /// Classifies raw revert data (see the module documentation). `None` when the data maps to no
     /// known revert, which a caller must treat as a refusal rather than as agreement.
+    ///
+    /// The selector decides, not the length: 17 of the errors below carry arguments
+    /// (`FeatureDisabled(uint8)`, `StalePrice(address)`, `InsufficientLiquidity(uint256)` and
+    /// the ERC20 ones among them), and the generators recorded those at their real on-chain
+    /// length (36 bytes for one word of argument, 100 for three), so matching only 4-byte data
+    /// left every one of them unclassified.
     pub fn from_revert_data(data: &[u8]) -> Option<Self> {
-        match data.len() {
-            0 => Some(Self::MulDivOverflow),
-            4 => {
-                let sel: [u8; 4] = data.try_into().ok()?;
-                if sel == LN_WAD_UNDEFINED_SELECTOR {
-                    return Some(Self::LnWadUndefined);
-                }
-                SELECTORS
-                    .iter()
-                    .find(|(s, _)| *s == sel)
-                    .map(|(_, e)| *e)
-            }
-            36 if data[..4] == PANIC_SELECTOR => match data[35] {
+        if data.is_empty() {
+            return Some(Self::MulDivOverflow);
+        }
+        let sel: [u8; 4] = data.get(..4)?.try_into().ok()?;
+        if data.len() == 36 && sel == PANIC_SELECTOR {
+            return match data[35] {
                 0x11 if data[4..35].iter().all(|b| *b == 0) => Some(Self::PanicArithmetic),
                 0x12 if data[4..35].iter().all(|b| *b == 0) => Some(Self::PanicDivZero),
                 0x32 if data[4..35].iter().all(|b| *b == 0) => Some(Self::PanicIndex),
                 _ => None,
-            },
-            n if n >= 68 && data[..4] == ERROR_STRING_SELECTOR => {
-                Self::from_morpho_require(error_string_payload(data)?)
-            }
-            _ => None,
+            };
         }
+        if data.len() >= 68 && sel == ERROR_STRING_SELECTOR {
+            return Self::from_morpho_require(error_string_payload(data)?);
+        }
+        if sel == LN_WAD_UNDEFINED_SELECTOR {
+            return Some(Self::LnWadUndefined);
+        }
+        SELECTORS
+            .iter()
+            .find(|(s, _)| *s == sel)
+            .map(|(_, e)| *e)
     }
 
     /// The variant of one of Morpho Blue's `ErrorsLib` require strings, `None` for any other
@@ -810,6 +816,35 @@ mod tests {
         );
         assert_eq!(FlammError::from_revert_data(&[0, 0, 0, 0]), None);
         assert_eq!(FlammError::LnWadUndefined.selector(), None);
+    }
+
+    /// The errors that carry arguments classify at the length they revert with: the selector
+    /// then one word per `uint256` / `address`, as the fixture generators recorded them.
+    #[test]
+    fn parameterised_custom_errors() {
+        for (e, words) in [
+            (FlammError::InsufficientLiquidity, 1),
+            (FlammError::InsufficientCollateral, 1),
+            (FlammError::InsufficientBridge, 1),
+            (FlammError::FeatureDisabled, 1),
+            (FlammError::StalePrice, 1),
+            (FlammError::InvalidPrice, 1),
+            (FlammError::ERC20InsufficientBalance, 3),
+        ] {
+            let mut data = e.selector().unwrap().to_vec();
+            data.resize(4 + 32 * words, 0);
+            assert_eq!(FlammError::from_revert_data(&data), Some(e), "{e:?}");
+        }
+        // An unknown selector with arguments is still no classification.
+        let mut unknown = vec![0u8; 36];
+        unknown[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(FlammError::from_revert_data(&unknown), None);
+        // A `Panic(uint256)` with an unmapped code stays unmapped: the panic selector is not in
+        // the table.
+        let mut panic = vec![0x4e, 0x48, 0x7b, 0x71];
+        panic.extend([0u8; 32]);
+        panic[35] = 0x51;
+        assert_eq!(FlammError::from_revert_data(&panic), None);
     }
 
     #[test]
