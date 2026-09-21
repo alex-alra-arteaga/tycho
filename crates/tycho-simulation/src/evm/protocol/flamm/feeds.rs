@@ -104,8 +104,9 @@ impl Transmission {
 
 /// The `DualAggregator` words the secondary-path reveal reads (`feed:mo0:*`): `s_hotVars`'
 /// `latestAggregatorRoundId` / `latestSecondaryRoundId`, `s_cutoffTime`, and `s_transmissions[r]`
-/// for every round the reveal can answer with (the substreams carries `latest-20..=latest` plus
-/// the secondary round and deletes the rest).
+/// for the rounds the substreams carries, a superset of the ones a reveal can answer with: the
+/// 21-round window `latest-20..=latest`, one more than the 20 `_getSyncPrimaryRound` visits, plus
+/// the secondary round when it has fallen below the window; the rest are deleted.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DualFeed {
     pub latest: u32,
