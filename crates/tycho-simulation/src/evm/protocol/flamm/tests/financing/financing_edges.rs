@@ -997,12 +997,12 @@ fn settle_edges() {
     rep.finish(rows.len() - 1);
 }
 
-/// `FLAMMGateLib.book` (`FLAMMGateLib.sol:153-163`, ported as `gate::book_of`) assembles the book the settlement legs and
-/// `assertGate` read: one leg per pool loan, its `liquid` and `scale` from the pool's loan
-/// configuration and its `supplied` / `debt` from the Router's positions at the same index, with
-/// the physical balance and the posted collateral on the book itself. Every row of the gate edge
-/// fixture is replayed through it, including the 23 rows whose Router carries fewer legs than the
-/// pool has loans, where the chain's `sup[i]` (`:161`) is `Panic(0x32)`.
+/// `FLAMMGateLib.book` (`FLAMMGateLib.sol:153-163`, ported as `gate::book_of`) assembles the book
+/// the settlement legs and `assertGate` read: one leg per pool loan, its `liquid` and `scale` from
+/// the pool's loan configuration and its `supplied` / `debt` from the Router's positions at the
+/// same index, with the physical balance and the posted collateral on the book itself. Every row of
+/// the gate edge fixture is replayed through it, including the 23 rows whose Router carries fewer
+/// legs than the pool has loans, where the chain's `sup[i]` (`:161`) is `Panic(0x32)`.
 #[test]
 fn gate_book_shape() {
     let rows: Vec<GateRow> = load("edges/gate_edges.json.gz");
