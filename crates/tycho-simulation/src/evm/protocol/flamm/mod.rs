@@ -11,6 +11,18 @@
 //! `FLAMM.leverUp`, pool asset in only). Lever-down is not quoted: it pulls only its net pay leg,
 //! which the router would strand. Execution is the `FLAMMExecutor` of the execution PR.
 //!
+//! **The two components are one pool's inventory, and a solution must not use both.** They are the
+//! same book, the same Morpho position and the same gate room, reported twice: the swap venue's
+//! balances and the lever-up venue's are the same tokens, and each venue's `get_limits` is computed
+//! as if the other took nothing. A route that splits across them, or chains through both, prices
+//! its second leg against liquidity its first leg has already consumed, and the fill reverts on
+//! chain. Tycho has no primitive this integration could use to declare that two components share
+//! one reserve or are mutually exclusive, and the defect is price rather than capacity, so derating
+//! each venue's limit would not make a split safe. Until such a primitive exists, a solver must
+//! treat the two components as alternatives: quote both, take the better one, use one per solution.
+//! Both are already `skip_simulation` and `skip_execution` in the package's integration tests, so
+//! nothing in the shipped test surface exercises a split.
+//!
 //! # State sourcing
 //!
 //! The `base-flamm` substreams (`protocols/substreams/base-flamm`) streams every storage word a
@@ -40,11 +52,18 @@
 //!
 //! # Limits
 //!
-//! Only sizes the pool fills in full are quoted: `get_limits` locates the largest per direction,
-//! and inside it a buy's dust, which the pool refuses (a few thousand loan-asset units, below a
-//! hundredth of a percent of the limit at every recorded block; the sizes the protocol test
-//! harness derives from the limit fill), is the empty trade, so every size in `[0, limit]`
-//! answers and `query_pool_swap` (the generic search) runs on both venues. `spot_price(base,
+//! `get_limits` returns a size the venue fills in full, and the trait's limit is the soft one
+//! (`ProtocolSim::get_limits`): `[0, limit]` is the domain `get_amount_out` answers on, not a
+//! threshold above which nothing fills. A buy above it can still fill, because the price band is
+//! periodic in the size rather than monotone. Inside `[0, limit]` every size answers, a fill or,
+//! where the pool refuses, the empty trade, so `query_pool_swap` (the generic search) runs on
+//! both venues; the refusals are a buy's dust near zero and the band plateaus just below the
+//! limit. The dust bound is absolute, not a fraction of the limit: the largest refused buy is
+//! 7,683 / 6,888 / 9,122 loan-asset base units at the pinned snapshot blocks 51302915, 51313000
+//! and 51409000, whose buy limits are 165M to 391M, and the smallest size the protocol test
+//! harness derives from the limit, a thousandth of it, clears that bound by a factor of 21 to 43
+//! at those blocks. [`sim`]'s `get_limits`
+//! states the contract in full. `spot_price(base,
 //! quote)` is the trait's price, the `quote` that buys one `base` gross of that direction's
 //! fee; the lever-up venue, which only sells the pool asset, has one rate and answers both
 //! orderings from it (`spot_price(pool asset, loan asset)` is the price of the direction it
@@ -53,12 +72,18 @@
 //! can observe the clock's move: a deadline crossed (a feed's heartbeat, the sequencer grace,
 //! the spread's age, the Morpho oracle's reveal, a scheduled change, the rate ceiling's
 //! verdict) or a pool positioned in its venue, whose debt and supply accrue every second; an
-//! unpositioned pool is quiet between deadlines. A state whose attributes are incomplete (a
-//! word the pinned code writes at construction is required, never read as zero), whose code or
-//! wiring the port does not model, whose IRM or oracle cannot be read, whose venue is
+//! unpositioned pool is quiet between deadlines. A state whose attributes are incomplete, whose
+//! code or wiring the port does not model, whose IRM or oracle cannot be read, whose venue is
 //! quarantined or whose scheduled implementation / hook-set change is executable refuses to
 //! quote rather than guess; at snapshot time [`flamm_filter`] skips such a component instead
-//! of failing the stream. Balances (TVL) are not a quote input.
+//! of failing the stream. Incomplete means a word the pinned code writes non-zero at
+//! construction is absent: the `EverlongHook` `Params` and `Tuning` rows (slots 0, 4, 5, 6), its
+//! support, anchor, reservation price and book (10-18 and 20), the `LeverageSpreadHook`'s only
+//! word, each registered `PriceFeed` token's word pair, `FLAMMStore`'s configuration rows and the
+//! share supply are required to be present, decoded at whatever value they hold. The three the
+//! constructor leaves for the first fill or the first observation (`idleStable`, `idleVolatile`,
+//! `rvWad`) are read as zero when absent, so this is a completeness guard over the configuration,
+//! not a general lost-word detector. Balances (TVL) are not a quote input.
 //!
 //! | module | contract |
 //! |---|---|
