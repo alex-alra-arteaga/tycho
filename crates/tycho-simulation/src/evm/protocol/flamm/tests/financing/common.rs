@@ -183,15 +183,11 @@ pub fn revert_of(data: &[u8]) -> Option<FlammError> {
         b"irm dead" | b"irm down" => return Some(FlammError::MorphoIrmReverted),
         _ => {}
     }
+    // A custom error carrying arguments (`InsufficientLiquidity(uint256)` and its kin) is
+    // classified by its selector at its recorded length: `from_revert_data` dispatches on the
+    // selector, not the length, so there is nothing left for a `data[..4]` retry to catch.
     if let Some(e) = FlammError::from_revert_data(data) {
         return Some(e);
-    }
-    // a custom error carrying arguments (`InsufficientLiquidity(uint256)` and its kin): the
-    // selector alone
-    if data.len() > 4 {
-        if let Some(e) = FlammError::from_revert_data(&data[..4]) {
-            return Some(e);
-        }
     }
     match error_string_payload(data)? {
         "dead" | "oracle down" => Some(FlammError::MorphoOracleReverted),

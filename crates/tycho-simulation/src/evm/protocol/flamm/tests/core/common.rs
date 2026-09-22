@@ -108,6 +108,10 @@ pub fn return_words(h: &str) -> Vec<U256> {
 /// Blue's require strings, and any other data is a custom error by its 4-byte selector, whatever
 /// its arguments (`StalePrice(address)`, `FeatureDisabled(uint8)`, ... carry 36 bytes). `None` is
 /// unmapped data, which fails the row.
+///
+/// Everything after the mocks' raw strings is [`FlammError::from_revert_data`], which dispatches
+/// on the selector at the recorded length: the panic, the `Error(string)` and the
+/// argument-carrying custom errors are one call, not three branches over the length.
 pub fn revert_class(h: &str) -> Option<FlammError> {
     let b = hex::decode(h.trim_start_matches("0x")).expect("hex");
     match &b[..] {
@@ -116,16 +120,7 @@ pub fn revert_class(h: &str) -> Option<FlammError> {
         b"down" => return Some(FlammError::MorphoIrmReverted),
         _ => {}
     }
-    if b.len() < 4 {
-        return None;
-    }
-    if b.len() == 36 && b[..4] == [0x4e, 0x48, 0x7b, 0x71] {
-        return FlammError::from_revert_data(&b);
-    }
-    if b[..4] == [0x08, 0xc3, 0x79, 0xa0] {
-        return FlammError::from_revert_data(&b);
-    }
-    FlammError::from_revert_data(&b[..4])
+    FlammError::from_revert_data(&b)
 }
 
 /// The recorded outcome of one call: the return words, or the revert class (`None`: unmapped
