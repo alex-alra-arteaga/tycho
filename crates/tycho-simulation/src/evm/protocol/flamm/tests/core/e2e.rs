@@ -24,7 +24,10 @@ use super::common::{
     outcome_hex, read_fixture, return_words, revert_class, Chain, Report, State, Word, E2E_BLOCKS,
     EDGE_BLOCKS,
 };
-use crate::evm::protocol::flamm::FlammError;
+use crate::evm::protocol::flamm::{
+    state::{FEATURE_LEVERAGE, FEATURE_SWAP_BUY, FEATURE_SWAP_SELL},
+    FlammError,
+};
 
 fn preview_swap_words(s: &State, sell: bool, a: U256, now: u64) -> Result<Vec<U256>, FlammError> {
     let p = s.preview_swap(sell, a, now)?;
@@ -595,17 +598,20 @@ fn edge_grids() {
 }
 
 /// `TestCoreEdgeGridSensitivity`: each small perturbation of a state input the scenario exercises
-/// must produce mismatches (the unperturbed replay requires none).
+/// must produce mismatches (the unperturbed replay requires none). A case is `(name, scenario
+/// tag, mutation)`: the mutation is applied to that scenario's freshly built state and the replay
+/// is filtered to it, so several cases can perturb different inputs of one scenario.
 #[test]
 fn edge_grid_sensitivity() {
     let one = U256::from(1u64);
     type Mutation = Box<dyn Fn(&mut State)>;
-    let cases: Vec<(&str, Mutation)> = vec![
-        ("seq_grace_eq", Box::new(move |s| s.feed.sequencer_grace -= one)),
-        ("cb_age_eq", Box::new(move |s| s.feed.asset.heartbeat -= one)),
-        ("usdc_age_eq", Box::new(move |s| s.feed.loans[0].heartbeat -= one)),
-        ("peg_lo_eq", Box::new(move |s| s.feed.loans[0].peg_band_wad -= one)),
+    let cases: Vec<(&str, &str, Mutation)> = vec![
+        ("seq_grace_eq", "seq_grace_eq", Box::new(move |s| s.feed.sequencer_grace -= one)),
+        ("cb_age_eq", "cb_age_eq", Box::new(move |s| s.feed.asset.heartbeat -= one)),
+        ("usdc_age_eq", "usdc_age_eq", Box::new(move |s| s.feed.loans[0].heartbeat -= one)),
+        ("peg_lo_eq", "peg_lo_eq", Box::new(move |s| s.feed.loans[0].peg_band_wad -= one)),
         (
+            "armed_min",
             "armed_min",
             Box::new(move |s| {
                 s.hooks
@@ -618,6 +624,7 @@ fn edge_grid_sensitivity() {
         ),
         (
             "spread_age_eq",
+            "spread_age_eq",
             Box::new(move |s| {
                 s.hooks
                     .spread
@@ -627,8 +634,13 @@ fn edge_grid_sensitivity() {
                     .max_spread_age -= one;
             }),
         ),
-        ("degrade_zero", Box::new(move |s| s.last_lever_spread_ppm = U256::from(17_500u64))),
         (
+            "degrade_zero",
+            "degrade_zero",
+            Box::new(move |s| s.last_lever_spread_ppm = U256::from(17_500u64)),
+        ),
+        (
+            "live",
             "live",
             Box::new(move |s| {
                 s.hooks
@@ -639,9 +651,18 @@ fn edge_grid_sensitivity() {
                     .reserve_volatile += one;
             }),
         ),
-        ("ratecap_0", Box::new(move |s| s.router.venues[0].max_borrow_rate_wad -= one)),
-        ("irm_dt_3600", Box::new(move |s| s.router.venues[0].morpho.irm_readable = true)),
         (
+            "ratecap_0",
+            "ratecap_0",
+            Box::new(move |s| s.router.venues[0].max_borrow_rate_wad -= one),
+        ),
+        (
+            "irm_dt_3600",
+            "irm_dt_3600",
+            Box::new(move |s| s.router.venues[0].morpho.irm_readable = true),
+        ),
+        (
+            "morpho_fee",
             "morpho_fee",
             Box::new(move |s| {
                 s.router.venues[0]
@@ -650,12 +671,14 @@ fn edge_grid_sensitivity() {
                     .last_update -= U256::from(86_400u64)
             }),
         ),
-        ("debtcap_tight", Box::new(move |s| s.router.venues[0].debt_cap += one)),
+        ("debtcap_tight", "debtcap_tight", Box::new(move |s| s.router.venues[0].debt_cap += one)),
         (
+            "ltv_low_1",
             "ltv_low_1",
             Box::new(move |s| s.pool.room_epsilon_wad += U256::from(1_000_000_000_000_000u64)),
         ),
         (
+            "whale_dt1",
             "whale_dt1",
             Box::new(move |s| {
                 s.router.venues[0]
@@ -664,8 +687,22 @@ fn edge_grid_sensitivity() {
                     .total_supply_assets += one
             }),
         ),
+        // The max-price bound: the scenario's cbBTC answer puts the cross 76 wei under
+        // `PriceFeed.MAX_PRICE_WAD`, and one unit of the answer is a hundred wei of cross, so
+        // `+1` takes `cross` over the bound it is pinned against (`PriceFeed.sol:108-116`).
+        ("cb_maxprice", "cb_maxprice_eq", Box::new(move |s| s.feed.asset.round.answer += one)),
+        // The two pause bits and the feature mask (`FLAMMStore.sol:190-200`, `:362`): `paused`
+        // stops every swap and lever, `levPaused` only the lever venue, and a cleared feature bit
+        // its own direction. `live` is levPaused on chain, so the `lev_paused` case CLEARS the
+        // bit: the port then quotes a lever venue the chain refuses. `feature_leverage` is the
+        // one perturbed on `armed_min`, whose lever venue is the one that quotes.
+        ("paused", "live", Box::new(|s| s.paused = true)),
+        ("lev_paused", "live", Box::new(|s| s.lev_paused = false)),
+        ("feature_swap_sell", "live", Box::new(|s| s.pool.features &= !FEATURE_SWAP_SELL)),
+        ("feature_swap_buy", "live", Box::new(|s| s.pool.features &= !FEATURE_SWAP_BUY)),
+        ("feature_leverage", "armed_min", Box::new(|s| s.pool.features &= !FEATURE_LEVERAGE)),
     ];
-    for (tag, mutate) in &cases {
+    for (case, tag, mutate) in &cases {
         let mut rep = Report { quiet: true, ..Default::default() };
         let m = |t: &str, s: &mut State| {
             if t == *tag {
@@ -673,9 +710,9 @@ fn edge_grid_sensitivity() {
             }
         };
         let classes = replay_edge_grid("51324800", &mut rep, Some(tag), Some(&m));
-        assert!(rep.checks > 0, "{tag}: no rows");
-        assert!(!rep.failures.is_empty(), "perturbing {tag} changed no row ({classes:?})");
-        eprintln!("sensitivity {tag}: broke at {}", rep.failures[0]);
+        assert!(rep.checks > 0, "{case}: no rows");
+        assert!(!rep.failures.is_empty(), "perturbing {case} changed no row ({classes:?})");
+        eprintln!("sensitivity {case}: broke at {}", rep.failures[0]);
     }
 }
 

@@ -174,6 +174,31 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
         Ok((r, post))
     }
 
+    /// The gate a swap passes before anything is priced, and the checked price it reads there
+    /// (`FLAMMSwapLib.sol:134-141`): the pool's pause bit and the loan asset's peg band guard the
+    /// pool-asset-in direction only, the feature bitmap guards both directions with its own mask,
+    /// and `FLAMMStore.price` is read between them. Returns the plan's `(p0, priceTs)`.
+    pub fn swap_open(
+        &self,
+        idx: usize,
+        pool_asset_in: bool,
+        now: u64,
+    ) -> Result<(U256, u64), FlammError> {
+        if pool_asset_in {
+            if self.paused {
+                return Err(FlammError::Paused);
+            }
+            self.feature(FEATURE_SWAP_SELL)?;
+        } else {
+            self.feature(FEATURE_SWAP_BUY)?;
+        }
+        let (p0, price_ts) = self.price(now)?;
+        if pool_asset_in && !self.peg_ok(idx, now)? {
+            return Err(FlammError::PegBroken);
+        }
+        Ok((p0, price_ts))
+    }
+
     /// `FLAMMSwapLib._plan` (`FLAMMSwapLib.sol:125`) over the priced book `b` (`pool` carries its
     /// price frame).
     pub fn swap_plan(
@@ -189,18 +214,7 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
         let (Some(cfg), Some(leg)) = (pool.loans.get(i), b.legs.get(i)) else {
             return Err(FlammError::PanicIndex);
         };
-        if pool_asset_in {
-            if self.paused {
-                return Err(FlammError::Paused);
-            }
-            self.feature(FEATURE_SWAP_SELL)?;
-        } else {
-            self.feature(FEATURE_SWAP_BUY)?;
-        }
-        let (p0, price_ts) = self.price(now)?;
-        if pool_asset_in && !self.peg_ok(i, now)? {
-            return Err(FlammError::PegBroken);
-        }
+        let (p0, price_ts) = self.swap_open(i, pool_asset_in, now)?;
         let mut p = SwapPlan {
             idx,
             pool_asset_in,
@@ -327,9 +341,9 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
         Ok(())
     }
 
-    /// The fee bounds of `FLAMMSwapLib._fill` (`FLAMMSwapLib.sol:180-186`): a fee below the larger
-    /// of the pool's floor and the asset's is refused (`FeeOutOfBounds`), one above the pool's cap
-    /// is clipped to it.
+    /// The fee bounds of `FLAMMSwapLib._fill` (`FLAMMSwapLib.sol:188`, `:195-196`): a fee below
+    /// the larger of the pool's floor and the asset's is refused (`FeeOutOfBounds`), one above the
+    /// pool's cap is clipped to it.
     pub fn bounded_fee(&self, fee_wad: U256, asset_floor_wad: U256) -> Result<U256, FlammError> {
         let floor_wad =
             if asset_floor_wad > self.fee_floor_wad { asset_floor_wad } else { self.fee_floor_wad };
@@ -340,10 +354,22 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
     }
 
     /// The fee a swap in one direction fills at right now (`FLAMMSwapLib._fill`'s
-    /// `previewFeeWad` on the priced context, `FLAMMSwapLib.sol:176-186`, bounded by
-    /// [`Self::bounded_fee`]): the hook's fee law reads the direction and the book, never the
-    /// size, so this is the `feeWad` every `previewSwap` of that direction returns. Runs the
-    /// same reads a plan does up to the fee (the Router positions and the feed at `now`).
+    /// `previewFeeWad` on the priced context, `FLAMMSwapLib.sol:187`, bounded by
+    /// [`Self::bounded_fee`], `:188`, `:195-196`): the hook's fee law reads the direction and the
+    /// book, never the size, so this is the `feeWad` every `previewSwap` of that direction
+    /// returns. Runs the same gate and the same reads a plan does up to the fee
+    /// ([`Self::swap_open`], the Router positions and the feed at `now`), so a direction the pool
+    /// would refuse outright has no fee here rather than the law's number.
+    ///
+    /// The gate bits are not the whole of that for a sell. `_plan` reads the gate room before it
+    /// looks at `amountIn` at all (`FLAMMGateLib.roomNative`, `FLAMMSwapLib.sol:159`), and the
+    /// sell ceiling is `min(room, funding)`, so a zero room is `RoomExhausted` (`:165-166`) for
+    /// every size the pool is ever asked for, no matter how the funding moves. A pool standing
+    /// at its exposure cap is in that state, which is an operational one for a levered pool, and
+    /// it has no sell fee. The funding itself is NOT checked here: it grows with the collateral
+    /// the sell brings in, so a funding that refuses one size can admit a larger one, which is a
+    /// property of the size and belongs to the fill. The buy direction never reads the room
+    /// (its ceiling is the book, `:151`) and keeps its own fee throughout.
     pub fn swap_fee_wad(&self, pool_asset_in: bool, now: u64) -> Result<U256, FlammError> {
         let cfg = self
             .pool
@@ -352,7 +378,10 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
             .ok_or(FlammError::PanicIndex)?;
         let mut pool = self.pool.clone();
         let b = priced(&self.feed, &self.router, &mut pool, now)?;
-        let (p0, price_ts) = self.price(now)?;
+        let (p0, price_ts) = self.swap_open(0, pool_asset_in, now)?;
+        if pool_asset_in && gate::room_native(&pool, &b, 0, gate::exposure_pw(&b)?)?.is_zero() {
+            return Err(FlammError::RoomExhausted);
+        }
         let ctx = gate::context(&b, p0, price_ts, self.share_supply)?;
         let sctx = SwapContext {
             pool: ctx,

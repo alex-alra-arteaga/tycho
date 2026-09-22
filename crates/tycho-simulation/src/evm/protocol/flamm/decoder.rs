@@ -504,29 +504,63 @@ pub fn decode_core(st: &Statics, attrs: &Attributes) -> Result<Core, DecodeError
 
     // ---- EverlongHook (EverlongHook.sol:94-111), schema 2.2
     let h = |slot: u64| w.owned("hook", U256::from(slot));
-    // Required: the constructor stores the whole `Params` (`EverlongHook.sol:157`: the
-    // `Tuning` row's fee parameters in slots 4 and 5 and its inventory surcharge and half-lives
-    // in slot 6, never zero since `emaHalfLife >= minEmaHalfLife > 0`, `:179`, `:205`) and
-    // `reservationPriceWad = anchorPriceWad * WAD` with `anchorPriceWad != 0` (`:152, :165`) in
-    // slot 15; a keeper's retuning rewrites the words, never removes them. Zero fee parameters
-    // would quote a fee-free fill, a zero inventory surcharge a fill without it
+    // Required: the words the constructor writes non-zero, so that a lost one is `Missing`
+    // rather than a zero that decodes into a state quoting a different amount. `_p = p`
+    // (`EverlongHook.sol:157`) puts `Params.aWad | spanUpWad` in slot 0 — `cWad` reverts below
+    // `MIN_A_WAD = 5e17 + 1` (`AlmCurve.sol:120`) and `supportFor` reverts unless
+    // `spanUpWad > WAD` (`:79`) — and the `Tuning` row's fee parameters in slots 4 and 5 and its
+    // inventory surcharge and half-lives in slot 6, the last never zero since
+    // `emaHalfLife >= minEmaHalfLife > 0` (`:178-179`, `:205`). `_sup = supportFor(...)` (`:158`)
+    // fills 10-13: `aWad` by the same bound, `xLo > MIN_X_WAD` and `xLo < xHi < MAX_X_WAD`
+    // (`AlmCurve.sol:85`), and `yHi = yAtX(xHi)`, which is above `yAtX(MAX_X_WAD)` because `yAtX`
+    // is decreasing — the one word here whose non-zero rests on the curve's range rather than on
+    // a revert. Then `anchorSqrtX96 > MIN_SQRT_PRICE_X96` (`:163`, `:164`) in 14,
+    // `reservationPriceWad = anchorPriceWad * WAD` with `anchorPriceWad != 0` (`:152`, `:165`) in
+    // 15, `kappa = KAPPA_SEED` and `xWad = HALF` unconditionally (`:166`, `:167`) in 16 and 17,
+    // and `reservesAt` in 18 and 20 (`:168`), zero only for a one-wei-wide band that holds
+    // nothing. A keeper's retuning or recentre rewrites these words, never removes them. Zero fee
+    // parameters would quote a fee-free fill, a zero inventory surcharge a fill without it
     // (`S.fillFee(t.fee, st, !ctx.poolAssetIn, t.invSkewKappaWad, t.invSkewBandWad)`, `:503`),
-    // a zero reservation price a different curve.
+    // a zero reservation price, support, anchor or book a different curve. Slots 4 and 5 are the
+    // weakest of the set: `_validateTuning` admits an all-zero fee row when
+    // `bounds.minFeeWad == 0` (`:190`). They stay required because every pool this package
+    // indexes writes them, and relaxing them would only weaken the guard on the pool that
+    // exists.
+    //
+    // Optional, and deliberately so: 19 and 21 (`idleStable`, `idleVolatile`), first written by
+    // a fill, and 23 (`rvWad`), first written by an observation — the constructor writes 22, 24
+    // and 25 but never 23 (`:170-172`). Requiring them would refuse the pool from genesis until
+    // its first fill and its first variance print. The required set is therefore a
+    // construction-time completeness guard, not a general lost-word detector: a lost slot 23
+    // still decodes, and shifts the quote by about 1.3 %.
     let required = |slot: u64| w.required_owned("hook", U256::from(slot));
-    let h0 = h(0)?;
+    let h0 = required(0)?;
     let h4 = required(4)?;
     let h5 = required(5)?;
     let h6 = required(6)?;
+    let sup_a_wad = required(10)?;
+    // `Params.aWad` and `_sup.aWad` are one value held twice: the constructor derives the second
+    // from the first (`EverlongHook.sol:157-158`) and `setCurveConfig` rewrites both from
+    // `cfg.concentrationWad` (`:289-290`). A copy that disagrees is a corrupted word, not a pool
+    // (`snapshot_decoding_fails_closed` pins the refusal).
+    if field(h0, 0, 16) != sup_a_wad {
+        return Err(drift("Params.aWad is not _sup.aWad"));
+    }
     let hook_state = HookState {
         a_wad: field(h0, 0, 16),
-        support: Support { a_wad: h(10)?, x_lo: h(11)?, x_hi: h(12)?, y_hi: h(13)? },
-        anchor_sqrt_x96: field(h(14)?, 0, 20),
+        support: Support {
+            a_wad: sup_a_wad,
+            x_lo: required(11)?,
+            x_hi: required(12)?,
+            y_hi: required(13)?,
+        },
+        anchor_sqrt_x96: field(required(14)?, 0, 20),
         reservation_price_wad: required(15)?,
-        kappa: h(16)?,
-        x_wad: h(17)?,
-        reserve_stable: h(18)?,
+        kappa: required(16)?,
+        x_wad: required(17)?,
+        reserve_stable: required(18)?,
         idle_stable: h(19)?,
-        reserve_volatile: h(20)?,
+        reserve_volatile: required(20)?,
         idle_volatile: h(21)?,
         rv_wad: h(23)?,
         fee: FeeParams {
@@ -554,7 +588,14 @@ pub fn decode_core(st: &Statics, attrs: &Attributes) -> Result<Core, DecodeError
     };
     // ---- LeverageSpreadHook (LeverageSpreadHook.sol:30-35), schema 2.3
     let spread = if st.spread_hook != Address::ZERO {
-        let s0 = w.owned("spread", U256::ZERO)?;
+        // Required: the constructor writes `lastSetTs = uint48(block.timestamp)`
+        // (`LeverageSpreadHook.sol:54`), so the word is non-zero for every parameter set, and a
+        // zero decodes into a 17,500 ppm post read as a 0 ppm one that `maxSpreadAge == 0` never
+        // lets lapse (`:76-78`), which `FLAMMLeverLib._spread` then floors to
+        // `LEV_SPREAD_FLOOR_PPM = 2_500` (`FLAMMLeverLib.sol:23`, `:171`) — a venue that refuses
+        // on chain would quote. A pool with no spread hook keeps `SpreadHookSlot::default()`, so
+        // the guard belongs inside this branch.
+        let s0 = w.required_owned("spread", U256::ZERO)?;
         SpreadHookSlot {
             kind: HookKind::EverlongSpreadV1,
             everlong_spread: Some(SpreadHookState {
@@ -748,8 +789,22 @@ pub fn decode_core(st: &Statics, attrs: &Attributes) -> Result<Core, DecodeError
     }
     let token = |t: Address, proxy: Address, feed: &Feed| -> Result<FeedToken, DecodeError> {
         let base = pricefeed_token_slot(t);
-        let t0 = w.owned("pricefeed", base)?;
-        let t1 = w.owned("pricefeed", base + U256::from(1u8))?;
+        // Required once the statics name a proxy for the token: `_tokens[token] = Token({...})`
+        // is a whole-struct write in the constructor, the only write there is
+        // (`PriceFeed.sol:54-60` — the mapping has no setter), and it stores `heartbeat != 0`
+        // (`:50`), `scale = 10 ** (18 - feedDec) >= 1` and `unit = 10 ** dec >= 1`, so both words
+        // are present for every registered token. A lost first word reads the aggregator as zero
+        // and is caught by the drift check below; a lost second word reads `unit = 0` and deletes
+        // the peg band, which quotes full-size sells the chain refuses. An unregistered token
+        // keeps `owned`, so the `aggregator == Address::ZERO` branch below stays reachable.
+        let (t0, t1) = if proxy != Address::ZERO {
+            (
+                w.required_owned("pricefeed", base)?,
+                w.required_owned("pricefeed", base + U256::from(1u8))?,
+            )
+        } else {
+            (w.owned("pricefeed", base)?, w.owned("pricefeed", base + U256::from(1u8))?)
+        };
         let aggregator = field_addr(t0, 0);
         if aggregator != proxy {
             return Err(drift(&format!(

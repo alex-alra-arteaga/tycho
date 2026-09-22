@@ -738,6 +738,12 @@ impl Router {
     /// `MMRouterLib.fund` (`MMRouterLib.sol:265-297`): build the plan (any remainder reverts
     /// `InsufficientLiquidity`), drain every withdraw leg, then per borrow leg post its collateral,
     /// re-check it with `requireBorrowable` and borrow. Returns `(withdrawn, borrowed, posted)`.
+    ///
+    /// Every order entry indexes the plan and the venue vector through the same guard the rest of
+    /// the module uses, because `plan.withdrawTake[wo[i]]` and `p.venues[id]` are `Panic(0x32)` on
+    /// chain (`:273`, `:283`) for an id the record has not. The decoder refuses such a record
+    /// before it ever gets here, so this is the port keeping the chain's revert rather than a
+    /// reachable state.
     pub fn fund(
         &mut self,
         idx: u8,
@@ -752,27 +758,45 @@ impl Router {
         }
         let (mut withdrawn, mut borrowed, mut posted) = (U256::ZERO, U256::ZERO, U256::ZERO);
         for id in self.withdraw_order.clone() {
-            let take = plan.withdraw_take[id as usize];
+            let take = *plan
+                .withdraw_take
+                .get(id as usize)
+                .ok_or(FlammError::PanicIndex)?;
             if take.is_zero() {
                 continue;
             }
             withdrawn = checked_add(withdrawn, self.withdraw_supplied(id, take, now)?)?;
         }
         for id in self.borrow_order.clone() {
-            let sl = plan.borrow_slice[id as usize];
+            let sl = *plan
+                .borrow_slice
+                .get(id as usize)
+                .ok_or(FlammError::PanicIndex)?;
             if sl.is_zero() {
                 continue;
             }
-            let post = plan.post[id as usize];
+            let post = *plan
+                .post
+                .get(id as usize)
+                .ok_or(FlammError::PanicIndex)?;
             if !post.is_zero() {
-                let v = &mut self.venues[id as usize];
+                let v = self
+                    .venues
+                    .get_mut(id as usize)
+                    .ok_or(FlammError::PanicIndex)?;
                 v.morpho
                     .account_supply_collateral(post)?;
                 v.managed_collateral = checked_add(v.managed_collateral, post)?;
                 posted = checked_add(posted, post)?;
             }
-            self.require_borrowable(&self.venues[id as usize], sl, price_wad, now)?;
-            self.venues[id as usize]
+            let v = self
+                .venues
+                .get(id as usize)
+                .ok_or(FlammError::PanicIndex)?;
+            self.require_borrowable(v, sl, price_wad, now)?;
+            self.venues
+                .get_mut(id as usize)
+                .ok_or(FlammError::PanicIndex)?
                 .morpho
                 .account_borrow(sl, now)?;
             borrowed = checked_add(borrowed, sl)?;
@@ -1292,5 +1316,27 @@ mod tests {
         assert_eq!(r.position(1, 0), Err(FlammError::BadLoanIndex));
         assert_eq!(r.venue_position(0, 0), Err(FlammError::BadVenueId));
         assert_eq!(r.funding_ceiling(0, U256::ZERO, U256::ZERO, 0), Ok(U256::ZERO));
+    }
+
+    /// An order entry naming a venue the record has not is `Panic(0x32)` on chain
+    /// (`MMRouterLib.sol:273`, `:283`), and `fund` reaches its own loops with the plan unchecked
+    /// whenever `buildPlan` returned before that entry — here with nothing left to raise. The
+    /// decoder refuses such a record, so this pins the refusal, not a reachable state.
+    #[test]
+    fn fund_refuses_an_order_entry_the_record_has_not() {
+        let base = Router {
+            loans: vec![Loan::default()],
+            venues: vec![Venue::default()],
+            ..Default::default()
+        };
+        let mut r = Router { withdraw_order: vec![1], ..base.clone() };
+        assert_eq!(r.fund(0, U256::ZERO, U256::ZERO, U256::ZERO, 0), Err(FlammError::PanicIndex));
+        let mut r = Router { borrow_order: vec![1], ..base.clone() };
+        assert_eq!(r.fund(0, U256::ZERO, U256::ZERO, U256::ZERO, 0), Err(FlammError::PanicIndex));
+        let mut r = Router { withdraw_order: vec![0], borrow_order: vec![0], ..base };
+        assert_eq!(
+            r.fund(0, U256::ZERO, U256::ZERO, U256::ZERO, 0),
+            Ok((U256::ZERO, U256::ZERO, U256::ZERO))
+        );
     }
 }

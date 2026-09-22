@@ -53,8 +53,8 @@ use super::{
 /// A swap-role hook on the swap path (`hook_kinds.go` `swapHookPort` plus `levBookSource`): spot,
 /// the fee role's `previewFeeWad` / `executeFeeWad`, the invariant role's `previewExactIn` /
 /// `executeExactIn` (`FLAMMSwapLib.sol:84`, `:87`, `:149`, `:187`, `:197`) with the book the fill
-/// materialised, which the execution commits; and the two reads the leverage hook makes of it
-/// (`EverlongLeverageHook.sol:37`, `:48-52`).
+/// materialised, which the execution commits; and the two reads the leverage hook makes of it in
+/// `frame()` (`EverlongLeverageHook.sol:74`, `:77`).
 pub trait SwapHook: Clone {
     /// `EverlongHook.spot`: the spot at the stored coordinate in the pool's price units (the
     /// context is ignored on chain and not taken).

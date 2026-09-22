@@ -50,6 +50,13 @@ map_protocol_changes (params, Block, map_components, store_pools, store_words)
   its immutables, every one of its contracts was created with registered code in the range (a contract that
   was not has no tracked history, so the component would fail closed anyway), and the manifest tracks its
   external words (see "Failure modes").
+
+  The two components are one pool's inventory reported twice — the same book, the same Morpho
+  position, the same gate room — so a solution must use one or the other, never both. Each venue's
+  limits are computed as if the other took nothing, so a route that splits across them prices its
+  second leg against liquidity the first already spent and reverts on chain. Tycho has no primitive
+  for declaring two components mutually exclusive or backed by one reserve; until it does, the pair
+  is a choice, not a pool of two liquidities.
 * `map_protocol_changes` emits, per transaction: the new components with their full creation snapshot (every
   tracked word known after the creation transaction, the Morpho positions of the venue accounts as zero rows
   when never written, the feeds, the balances); the tracked words the transaction wrote (a `Creation` for the
@@ -73,9 +80,14 @@ forwarded key sets are supersets of the schema's (the whole pool namespace `FLAM
 hook slots 0..31, up to 8 router loans / 16 venues / 4 order words per order): a word a later curator action
 writes still reaches the decoder. A FLAMM-owned word that is absent was never written (the contract is tracked
 from its creation, and a write of zero to a zero slot is no storage change), so it reads as zero, except the
-words the pinned code writes non-zero when it constructs the contract (the hook's tuning row, slots 4 to 6:
-fee parameters, inventory surcharge and half-lives, and its reservation price; the pool's dials, fee bounds,
-loan band and share supply), which the decoder requires; an absent
+words the pinned code writes non-zero when it constructs the contract, whose presence the decoder requires
+(the value is then decoded whatever it holds): the `EverlongHook`'s `Params` and `Tuning` rows (slots 0, 4, 5
+and 6: the curve parameters, the fee parameters, the volatility parameters, the inventory surcharge and the
+half-lives), its support, anchor, reservation price and book (slots 10 to 18 and 20), the `LeverageSpreadHook`'s
+only word, both `PriceFeed` words of each registered token, and the pool's dials, fee bounds, loan band and
+share supply. The three the constructor leaves for the first fill or the first observation (`idleStable`,
+`idleVolatile`, `rvWad`, hook slots 19, 21 and 23) stay optional, so the guard is a completeness check over the
+configuration rather than a general lost-word detector. An absent
 Morpho/IRM/feed word is unknown and the decoder refuses to quote.
 
 Feeds, per role `<f>` in `asset` (cbBTC/USD), `loan0` (USDC/USD), `seq` (sequencer uptime), `mo0` (BTC/USD
@@ -88,7 +100,7 @@ behind venue 0's Morpho oracle):
 | `feed:<f>:check_enabled`, `feed:<f>:access_list` (asset, loan0, seq) | 32 (0/1) | the aggregator's `SimpleWriteAccessController` pair: `checkEnabled` and `s_accessList[proxy]`; `hasAccess = access_list || !check_enabled` |
 | `feed:<f>:kind` | ascii `ocr2` / `uptime` / `dual` | the manifest `aggregators` kind of the current aggregator (an addition to the schema so the decoder knows which access rule applies); absent when the manifest does not list the aggregator, and the decoder then refuses to quote (it cannot tell which access rule applies) |
 | `feed:<f>:round`, `feed:<f>:answer`, `feed:<f>:started_at`, `feed:<f>:updated_at` (asset, loan0, seq) | 32 | OCR2: `s_hotVars.latestAggregatorRoundId` (slot 11) and `s_transmissions[round]` (answer, observationsTimestamp, transmissionTimestamp), what `OCR2Aggregator.latestRoundData` reads; uptime feed: `s_feedState` (slot 4: round, status, startedAt, updatedAt); `round` is the aggregator round id, the proxy's is `phase << 64 | round` |
-| `feed:mo0:round`, `feed:mo0:secondary_round`, `feed:mo0:cutoff`, `feed:mo0:tx:<r>` | 32 | `s_hotVars` (slot 13: `latestAggregatorRoundId`, `latestSecondaryRoundId`), `s_cutoffTime` (slot 18), and the packed `Transmission` word (answer, observationsTimestamp, recordedTimestamp) of every round the secondary-path reveal can answer with, `s_transmissions[r]` as stored; entries leaving the window are deleted. The `DualAggregator` has no `answer` / `started_at` / `updated_at` attributes: the ring word of `round` carries them (schema 3.2). The window is `latest-20..=latest` plus the secondary round, one round more than `_getSyncPrimaryRound` visits (`latest-19..=latest`, `DualAggregator.sol:530-548`, `i_maxSyncIterations = 20`): a deliberate superset, the seeds and the schema snapshot carry 21 |
+| `feed:mo0:round`, `feed:mo0:secondary_round`, `feed:mo0:cutoff`, `feed:mo0:tx:<r>` | 32 | `s_hotVars` (slot 13: `latestAggregatorRoundId`, `latestSecondaryRoundId`), `s_cutoffTime` (slot 18), and the packed `Transmission` word (answer, observationsTimestamp, recordedTimestamp) of every round the package keeps for the reveal, `s_transmissions[r]` as stored; entries leaving the window are deleted. The `DualAggregator` has no `answer` / `started_at` / `updated_at` attributes: the ring word of `round` carries them (schema 3.2). The window is `latest-20..=latest`, plus the secondary round when it has fallen below it: a deliberate superset of the rounds a reveal can answer with, which are the `latest-19..=latest` that `_getSyncPrimaryRound` visits (`DualAggregator.sol:530-548`, `i_maxSyncIterations = 20`) and the secondary round the secondary-proxy branch returns. So the window is 21 rounds and the set is 22 while the secondary round is outside it; the seeds and the schema snapshot are both taken where it is inside, and carry 21 |
 
 Answers are two's-complement 32-byte words. Every feed attribute is decoded from the aggregators' storage words,
 which they write before emitting their events (`OCR2Aggregator._report`, `DualAggregator.sol:931-964`,
@@ -137,7 +149,7 @@ the unit tests assert the manifest carries exactly the fixture values in `testda
 | `aggregators` | `0x51ce…:ocr2`, `0x68be…:ocr2`, `0x606c…:uptime`, `0xe5ec…:dual` | the aggregators' verified sources (schema 2.6) |
 | `addresses` | the four aggregators | every storage write tracked (round words have per-round keys); every `aggregators` entry must be listed, the params are refused otherwise |
 | `words` | 48 `address:slot:value` seeds at `initialBlock - 1 = 51154965`: Morpho market and position words, the IRM rate, each proxy's slots 2 and 5, the guarded aggregators' `checkEnabled` / `s_accessList[proxy]`, the OCR2 `HotVars` and latest transmission, the uptime feed's `s_feedState`, the `DualAggregator`'s `HotVars`, cutoff and 21-round ring | `eth_getStorageAt` at 51154965, each cross-checked with its view (`aggregator()`, `phaseId()`, `accessController()`, `checkEnabled()`, `hasAccess(proxy, "")`, `latestRoundData()`, `getRoundData(r)`, `Morpho.market(id)`, `rateAtTarget(id)`) in `testdata/seeds_51154965.json` |
-| `immutables` | per pool, `name=value;…` for the 13 immutables listed above | the getters' answers in `testdata/immutables_51154990.json`; the DualAggregator's `i_secondaryProxy` / `i_maxSyncIterations` from its verified bytecode |
+| `immutables` | per pool, `name=value;…` for the 13 immutables listed above | ten of them the getters' answers in `testdata/immutables_51154990.json`, one (`irm_codehash`) `eth_getCode` at 51154990, and two, the `DualAggregator`'s `i_secondaryProxy` and `i_maxSyncIterations`, the operands its runtime code pushes where it uses them (`internal immutable`, so there is no getter to call; `testdata/README.md` records the walk) |
 
 Seeds are the one place the state does not come from the stream; they are what the design (section 4.4) asks
 PropellerHeads to review.
@@ -161,6 +173,15 @@ block's write, see "Failure modes").
 * A pool whose hook code, immutables, contract provenance or external words are unknown to the manifest is not
   emitted (a pool with untracked external words would have them valued as unknown in every block after its
   creation: its balances would miss the venue and a feed behind an unlisted aggregator would never quote).
+* A pool created with more than one financing venue is not emitted. `initializeHooks` registers every entry of
+  `createPool`'s `venues` array, but the package models one: `PoolCreated` names venue 0's account alone, the
+  static attributes and the pool config are `venue_0_*`, and the untracked-words gate can only name the venues
+  the config carries. A second venue would therefore be indexed with its Morpho market, position and IRM words
+  untracked and its collateral and recognized supply missing from the balances, so such a pool waits for a
+  package update that models it. The same limit applies to a venue a curator adds later (`addVenue`), which the
+  stream cannot refuse because the component already exists: the router's venue words are tracked, but the new
+  venue's Morpho and IRM words are not seeded and its inventory is not counted until a package update seeds
+  them.
 * A proxy rotation replaces the previous aggregator's attributes with the new aggregator's, both derived from
   their words (`feeds::feed_state`): what the new aggregator's words do not give (its `kind` when the manifest
   does not list it, a word never written or seeded) is deleted, and the feed fails closed until a package update
@@ -190,7 +211,8 @@ block's write, see "Failure modes").
 
 `cargo test -p base-flamm` replays real Base data through the pure cores of every module (the store-backed
 handlers themselves need the substreams host): the `createPool` transaction (components, static attributes equal
-to the schema snapshot, the creation snapshot, balances, and the same creation without the leverage pair), the
+to the schema snapshot, the creation snapshot, balances, the same creation without the leverage pair, and the
+refusals: an unknown hook, a missing manifest entry, an untracked external word, a second financing venue), the
 pool's first swap (the 12 words it moved, the inventory after it), the seeds against their views, one round of
 each aggregator from the aggregator's words after it cross-checked against its events, a synthetic proxy
 rotation, and the words-store filter. `src/verify_tests.rs` adds the curator's activation transaction (block
@@ -254,8 +276,7 @@ was written in did not have, so it was not run; the local replay above is what s
 # prerequisites: docker (the Postgres), the `substreams` CLI, `tycho-indexer` on PATH (`cargo install --path
 # crates/tycho-indexer` from the monorepo, or the docker route below), a StreamingFast token
 # (SUBSTREAMS_API_TOKEN; the endpoint https://base-mainnet.streamingfast.io:443 is picked by --chain base), a
-# Base RPC (archive not needed: the harness reads token metadata and, once execution is enabled, forks at the
-# stop block)
+# Base RPC (archive not needed: the harness reads token metadata and forks at the stop block to execute)
 cd protocols/testing
 docker compose up db -d                       # or a local Postgres; each run drops and recreates the database
 export RPC_URL=https://mainnet.base.org       # any Base RPC
@@ -287,11 +308,11 @@ Expected output:
   skipped (`levPaused` at the stop block: leverage stayed paused until 51433699, and since the unpause every
   lever-up still reverts `SpreadUnavailable`, the keeper never having re-posted a spread after the
   `LeverageSpreadHook` constructor's 17500 ppm post aged past `maxSpreadAge = 3600 s`, so no block yet shows
-  the venue quoting; a live spread would make it quotable, which no fixture covers); execution skipped for
-  both until the `FLAMMExecutor` is registered with the harness (`protocols/testing/fixtures/FLAMM.runtime.json`
-  and the `flamm` row of `EXECUTOR_MAPPING` in `protocols/testing/src/execution.rs`, on the execution branch
-  `feat/flamm-execution`): whichever of the two lands second sets the swap component's `skip_execution` to
-  false in `integration_test.tycho.yaml`, and the harness then executes the quoted sizes through the executor.
+  the venue quoting; a live spread would make it quotable, which no fixture covers); the swap component's
+  quoted sizes are executed through the `FLAMMExecutor` the harness holds under `flamm`
+  (`protocols/testing/fixtures/FLAMM.runtime.json`, the `flamm` row of `EXECUTOR_MAPPING` in
+  `protocols/testing/src/execution.rs`) on a fork of the stop block; the lever-up component's execution is
+  skipped with its simulation.
 
 The second test streams ~148k Base blocks (the pool sat paused for ~143k of them); on the hosted stack that is
 minutes of substreams time. A run that fails at the component comparison prints the differing field; one that

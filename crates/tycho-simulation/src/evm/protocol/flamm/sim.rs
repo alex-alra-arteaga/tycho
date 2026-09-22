@@ -8,8 +8,9 @@
 //! hook fill, the validation and the settlement through the Router and Morpho, exactly as
 //! `FLAMM.swap` / `FLAMM.leverUp` would at `block.timestamp == clock`. Only a size the pool fills
 //! in full is a quote: the executor (`FLAMMExecutor`) reverts on a partial fill, so a size the
-//! pool would clip is refused here, and [`ProtocolSim::get_limits`] locates the largest size per
-//! direction that fills in full.
+//! pool would clip is refused here, and [`ProtocolSim::get_limits`] locates a size per direction
+//! that fills in full (the trait's soft limit: the band's quantization keeps it from being a
+//! threshold in the buy direction).
 //!
 //! The execution clock is what [`ProtocolSim::apply_block`] sets: Morpho's accrual, the IRM's
 //! adaptation, the feeds' staleness, the sequencer grace, the spread's age and the Morpho oracle's
@@ -122,9 +123,53 @@ enum Refusal {
     LeverDown,
 }
 
+/// Whether a revert is a property of the pool's state at this clock rather than of the size
+/// asked for: a feed past its heartbeat or answering out of bounds, the sequencer, a pause bit,
+/// a broken peg, a lapsed spread post, a cleared feature bit, a missing leverage hook, an
+/// unreadable rate model, a Morpho ring that does not answer, or a fee the pool's own bounds
+/// refuse (`FeeOutOfBounds`: the hook's fee law reads the direction and the book, never the size
+/// (`swap_fee_wad`), so a floor above the law's answer refuses every size in that direction, and
+/// `spot_price` reports that same read as recoverable). Nothing about the input changes these,
+/// and a later block may lift every one of them, which is what
+/// [`SimulationError::RecoverableError`] means; [`FlammPoolState::quotable`] already reports the
+/// same family that way when it reads it itself. Every other revert is reached because of the
+/// size that was asked for (the caps, the room, the band, the fill's own arithmetic), so it is
+/// [`SimulationError::InvalidInput`]. `RoomExhausted` stays on that side although a pool at its
+/// exposure cap refuses every sell: the arm fires whenever `min(room, funding)` is zero, and a
+/// funding-bound ceiling grows with the collateral the size itself brings in, so the error alone
+/// does not say which bound produced the zero. `spot_price` classifies `swap_fee_wad`'s error
+/// through this same function rather than calling every one of them recoverable, so a state
+/// answers with one class in both methods; the cost is that the exposure-capped sell, which no
+/// size can fill, reports `InvalidInput` in both. Separating the two bounds would take a second
+/// error, which is not worth a variant on this enum today.
+fn state_driven(e: FlammError) -> bool {
+    matches!(
+        e,
+        FlammError::StalePrice |
+            FlammError::InvalidPrice |
+            FlammError::FeedReverted |
+            FlammError::SequencerDown |
+            FlammError::SequencerGrace |
+            FlammError::Paused |
+            FlammError::GlobalPaused |
+            FlammError::LevPaused |
+            FlammError::PegBroken |
+            FlammError::SpreadUnavailable |
+            FlammError::FeeOutOfBounds |
+            FlammError::FeatureDisabled |
+            FlammError::LeverageDisabled |
+            FlammError::IrmUnreadable |
+            FlammError::MorphoOracleReverted |
+            FlammError::MorphoIrmReverted
+    )
+}
+
 impl From<Refusal> for SimulationError {
     fn from(r: Refusal) -> Self {
         match r {
+            Refusal::Pool(e) if state_driven(e) => {
+                Self::RecoverableError(format!("flamm: the pool reverts {e}"))
+            }
             Refusal::Pool(e) => Self::InvalidInput(format!("flamm: the pool reverts {e}"), None),
             Refusal::Partial(used) => Self::InvalidInput(
                 format!(
@@ -499,12 +544,16 @@ impl FlammPoolState {
         None
     }
 
-    /// The largest size that fills in full in `dir`, and its output: doubling from one base unit
-    /// to the first size that fills in full, doubling on to the first that does not, then
-    /// bisection between the two. Past the first fully filled size the predicate is monotone:
-    /// the clip (the gate room, the notional cap, the Router's funding at the pin, which grows
-    /// slower than the payout) and the band binding only tighten with size. Every probe is the
-    /// pool's whole transaction. `(0, 0)` when no size up to `2^128` fills in full.
+    /// A size that fills in full in `dir`, and its output: doubling from one base unit to the
+    /// first size that fills in full, doubling on to the first that does not, then bisection
+    /// between the two. The clip (the gate room, the notional cap, the Router's funding at the
+    /// pin, which grows slower than the payout) tightens with size, but the band binding does
+    /// not: a buy's payout is quantized to the pool asset's base unit, so whether the NET sits
+    /// inside the band around the checked cross (`FLAMMSwapLib.sol:233`) turns over with a
+    /// period of about one output unit of input. The bisection therefore returns the edge of one
+    /// such plateau, not a threshold above which nothing fills: sizes above it may fill too,
+    /// which is what the trait's soft limit allows ([`ProtocolSim::get_limits`]). Every probe is
+    /// the pool's whole transaction. `(0, 0)` when no size up to `2^128` fills in full.
     fn limit(&self, flamm: &Flamm, dir: Direction) -> Result<(U256, U256), SimulationError> {
         let probe = |a: U256| -> Option<U256> {
             self.full_fill(flamm, dir, a)
@@ -672,6 +721,18 @@ impl ProtocolSim for FlammPoolState {
     /// LEV_SPREAD_CEILING_PPM)]`, the `spreadPpm` every `previewLever(true, .)` returns, never
     /// the raw post). `1.0` when the venue cannot fill at all (a fee the floor refuses, an
     /// unreadable state, no live spread): no price survives it.
+    ///
+    /// Whatever the plan reads before it reaches the fee is part of that, not only the gate
+    /// bits: a sell whose pool is paused, whose feature bit is off, whose loan asset has left
+    /// its peg band or whose gate room is exhausted has no fee ([`Flamm::swap_fee_wad`]), and
+    /// neither has a lever-up whose venue is closed ([`Flamm::lever_open`],
+    /// `FLAMMLeverLib.sol:80-88`) or whose POOL asset feed is stale. That second read is
+    /// `FLAMMStore.price($)`, the line after `_open($, true)` in `_planUp`
+    /// (`FLAMMLeverLib.sol:91-92`) and the only place the lever-up path touches the pool
+    /// asset's round: `_open`'s `pegOk($, 0)` reads the LOAN asset's, so past the pool asset's
+    /// heartbeat the gate is still open while every size reverts `StalePrice`. Quoting the fee
+    /// law over a venue in either state would answer with a rate nothing can fill at, which is
+    /// the one thing the `1.0` above rules out.
     fn fee(&self) -> f64 {
         let Ok(flamm) = self.quotable() else {
             return 1.0;
@@ -681,10 +742,19 @@ impl ProtocolSim for FlammPoolState {
                 Ok(fee) => u256_to_f64(fee).map_or(1.0, |f| f / 1e18),
                 Err(_) => 1.0,
             },
-            VenueKind::LeverUp => match flamm.lever_spread(&flamm.pool, true, self.clock) {
-                Ok((ppm, _)) if ppm < PPM => u256_to_f64(ppm).map_or(1.0, |f| f / 1e6),
-                _ => 1.0,
-            },
+            VenueKind::LeverUp => {
+                if flamm
+                    .lever_open(true, self.clock)
+                    .and_then(|()| flamm.price(self.clock))
+                    .is_err()
+                {
+                    return 1.0;
+                }
+                match flamm.lever_spread(&flamm.pool, true, self.clock) {
+                    Ok((ppm, _)) if ppm < PPM => u256_to_f64(ppm).map_or(1.0, |f| f / 1e6),
+                    _ => 1.0,
+                }
+            }
         }
     }
 
@@ -697,6 +767,13 @@ impl ProtocolSim for FlammPoolState {
     /// the pool asset is the loan-asset-in direction and pays that direction's fee, buying the
     /// loan asset is the pool-asset-in direction and pays that one's (the two differ by the
     /// direction skew, `EverlongStrategy.sol:169-196`).
+    ///
+    /// Both venues answer only while they can fill: the swap venue's price carries the fee of
+    /// the direction that buys `base`, and that fee is read through everything the fill reads
+    /// before it ([`Flamm::swap_fee_wad`]), so a paused pool has no pool-asset-in price, a loan
+    /// asset outside its peg band has none either, and neither has a sell whose gate room is
+    /// exhausted; the lever-up venue's rate is read off a whole fill, so it refuses wherever
+    /// `_planUp` reverts, the stale pool asset feed of [`Self::fee`] included.
     ///
     /// The lever-up venue has no closed-form spot (its curve is the frozen `CollRebalancerMath`)
     /// and one rate: the loan asset it pays per pool asset at negligible size, read off a fill
@@ -725,7 +802,14 @@ impl ProtocolSim for FlammPoolState {
                 let pool_in_loan = self.hook_spot_frame(flamm, pool_decimals)?;
                 let fee = flamm
                     .swap_fee_wad(dir == Direction::Sell, self.clock)
-                    .map_err(|e| SimulationError::RecoverableError(format!("flamm: fee: {e}")))?;
+                    .map_err(|e| {
+                        let m = format!("flamm: fee: {e}");
+                        if state_driven(e) {
+                            SimulationError::RecoverableError(m)
+                        } else {
+                            SimulationError::InvalidInput(m, None)
+                        }
+                    })?;
                 let fee = u256_to_f64(fee)? / 1e18;
                 if fee >= 1.0 {
                     return Err(SimulationError::RecoverableError(
@@ -754,11 +838,14 @@ impl ProtocolSim for FlammPoolState {
 
     /// The venue's fill of `amount_in` at the execution clock, refused unless the pool fills it
     /// in full; the returned state is the pool after that transaction. A zero input is the empty
-    /// trade (the pool itself reverts `InvalidAmount()` on it), and so is dust: a size the pool
-    /// refuses although a larger one fills in full (`is_dust`), which pays nothing and is quoted
-    /// as nothing on the unchanged state, so that every size in the trait's `[0, limit]` domain
-    /// answers. A size above the limit is refused as the pool refuses it: a partial fill or the
-    /// pool's own revert.
+    /// trade (the pool itself reverts `InvalidAmount()` on it) in every direction, including the
+    /// one the venue does not trade, whose limit is `(0, 0)` and whose whole domain is therefore
+    /// that one point; a non-zero size in that direction is refused. Dust is the empty trade
+    /// too: a size the pool refuses although a larger one fills in full (`is_dust`), which pays
+    /// nothing and is quoted as nothing on the unchanged state, so that every size in the
+    /// trait's `[0, limit]` domain answers. A size above the limit is answered as the pool
+    /// answers it: a fill, when the band still admits that size (`Self::limit` is the trait's
+    /// soft limit, not a threshold), else a partial fill or the pool's own revert.
     fn get_amount_out(
         &self,
         amount_in: BigUint,
@@ -769,13 +856,15 @@ impl ProtocolSim for FlammPoolState {
         let gas = match (self.venue(), dir) {
             (VenueKind::Swap, Direction::Sell) => GAS_SWAP_SELL,
             (VenueKind::Swap, Direction::Buy) => GAS_SWAP_BUY,
-            (VenueKind::LeverUp, Direction::Sell) => GAS_LEVER_UP,
-            (VenueKind::LeverUp, Direction::Buy) => return Err(Refusal::LeverDown.into()),
+            (VenueKind::LeverUp, _) => GAS_LEVER_UP,
         };
         let empty =
             || GetAmountOutResult::new(BigUint::ZERO, BigUint::from(gas), Box::new(self.clone()));
         if amount_in == BigUint::ZERO {
             return Ok(empty());
+        }
+        if (self.venue(), dir) == (VenueKind::LeverUp, Direction::Buy) {
+            return Err(Refusal::LeverDown.into());
         }
         let flamm = self.quotable()?;
         let amount = amount_to_u256(&amount_in)?;
@@ -791,20 +880,41 @@ impl ProtocolSim for FlammPoolState {
         Ok(GetAmountOutResult::new(u256_to_biguint(f.out), BigUint::from(f.gas), Box::new(next)))
     }
 
-    /// The largest size of `sell_token` the venue fills in full and its output (`Self::limit`).
+    /// A size of `sell_token` the venue fills in full, and its output (`Self::limit`).
     ///
-    /// The contract, exactly: every size the venue fills in full lies in `[1, limit]`; a size
-    /// above `limit` is refused by [`ProtocolSim::get_amount_out`] (the pool clips it, a partial
-    /// fill, or reverts `PriceBand`); inside `[1, limit]` every size answers, a fill or, for
-    /// the dust the pool refuses, the empty trade. A sell of the pool asset fills from one base
-    /// unit at every recorded block. A buy with the loan asset is dust below a few thousand
-    /// base units (tenths of a cent): a payout that rounds to zero pool asset is `FillInvalid`,
-    /// and a payout of one to six units whose quantization leaves the band around the checked
-    /// cross (`FLAMMSwapLib.sol:233`) is `PriceBand`; the refused sizes are not an interval (at
-    /// 51409000 the pool fills 4096 units and refuses 5000), so `get_amount_out` is the only
-    /// test of a dust size. At every recorded block the largest refused buy is below a
-    /// hundredth of a percent of the limit, so the sizes a consumer derives from the limit (the
-    /// protocol test harness quotes 0.1%, 1% and 10% of it) fill in full. `(0, 0)` for a
+    /// The contract, exactly, and it is the trait's soft one (`ProtocolSim::get_limits`: the
+    /// limit is what a consumer is advised not to exceed, and `[0, limit]` is the domain
+    /// `get_amount_out` answers on, not a threshold above which nothing fills): `limit` fills in
+    /// full, and every size in `[0, limit]` answers, a fill or, where the pool refuses, the
+    /// empty trade. Sizes above `limit` are not guaranteed anything and usually are refused (the
+    /// pool clips them, a partial fill, or reverts `PriceBand`), but a buy above it can still
+    /// fill, because the band binding is periodic in the size rather than monotone: at 51409000
+    /// the pool fills 106 of the 400 sizes `limit + 1 ..= limit + 400`.
+    ///
+    /// The refusals inside `[1, limit]` are two families, and only `get_amount_out` tells a size
+    /// apart:
+    ///
+    /// - Dust near zero. A buy with the loan asset is dust below a few thousand base units (tenths
+    ///   of a cent): a payout that rounds to zero pool asset is `FillInvalid`, and a payout of one
+    ///   to six units whose quantization leaves the band around the checked cross
+    ///   (`FLAMMSwapLib.sol:233`) is `PriceBand`. The refused sizes are not an interval (at
+    ///   51409000 the pool fills 4096 units and refuses 5000). This bound is absolute, not a
+    ///   fraction of the limit: at the pinned blocks the largest such refusal is 7,683, 6,888 and
+    ///   9,122 loan-asset base units, which is a hundredth of a percent of the limit only because
+    ///   the buy limit there is 165M to 391M units. The sizes a consumer derives from the limit
+    ///   (the protocol test harness quotes 0.1%, 1% and 10% of it) all clear it at those blocks,
+    ///   the smallest of them, a thousandth of the limit, by a factor of 21 to 43
+    ///   (`the_buy_limit_is_the_traits_soft_limit` pins the bound and that factor); three orders of
+    ///   magnitude is the 10% size alone. They clear it at all while the limit stays above about
+    ///   ten million units.
+    /// - Band plateaus just below the limit. The same quantization turns the band over with a
+    ///   period of about one output unit of input, so the sizes immediately below the limit are
+    ///   refused in runs: at 51302915 the buy refuses 169 of the 400 sizes below its limit (the
+    ///   window `limit - 400` up to `limit - 1`), the largest of them 165,217,172, at 99.99986% of
+    ///   that limit.
+    ///
+    /// A sell of the pool asset fills from one base unit at every recorded block at which the
+    /// pool is unpaused, and refuses every size at the blocks at which it is not. `(0, 0)` for a
     /// direction the venue does not trade (the lever-up venue's loan asset in) and for a state
     /// that fills no size.
     fn get_limits(
@@ -860,6 +970,18 @@ impl ProtocolSim for FlammPoolState {
         Ok(())
     }
 
+    /// The generic search over this venue ([`crate::evm::query_pool_swap::query_pool_swap`]),
+    /// which walks `[0, limit]` through [`ProtocolSim::get_amount_out`].
+    ///
+    /// One caveat belongs to the venue rather than to the search: a `TradeLimitPrice` constraint
+    /// reads a probe's output as an execution price, and a size this venue refuses answers with
+    /// the empty trade, whose price the search reads as zero rather than as "no information".
+    /// A bracket that reaches into the buy's dust (below a few thousand loan-asset base units,
+    /// [`ProtocolSim::get_limits`]) therefore moves the wrong way and can end in the zero swap
+    /// where a feasible trade exists. The shared search is what would have to distinguish the
+    /// two, and it is shared with every protocol whose `get_amount_out` can answer zero; the
+    /// venue keeps the empty trade because `[0, limit]` answering everywhere is what the trait
+    /// asks of it.
     fn query_pool_swap(&self, params: &QueryPoolSwapParams) -> Result<PoolSwap, SimulationError> {
         crate::evm::query_pool_swap::query_pool_swap(self, params)
     }

@@ -204,7 +204,7 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
     /// `ILeverageInvariantHook(leverageHook).previewLever(p.ctx)` (`FLAMMLeverLib.sol:100`,
     /// `:128`): the leverage hook's quote over the pool's swap hook's book (`hook_kinds.go`
     /// `everlongLeverageV1.previewLever`: `EverlongHook.bookFor(ctx.pool)` and
-    /// `reservationPriceWad()`, `EverlongLeverageHook.sol:37`, `:48-52`).
+    /// `reservationPriceWad()`, `EverlongLeverageHook.sol:74`, `:77`).
     fn lever_fill(&self, ctx: &LeverContext) -> Result<LevFill, FlammError> {
         let lev = self.hooks.leverage.port()?;
         let swap = self.hooks.swap.port()?;
@@ -507,21 +507,6 @@ mod tests {
             .loans
             .push(super::super::pricefeed::FeedToken { known: true, ..Default::default() });
         assert_eq!(s.lever_open(true, 0), Ok(())); // a zero peg band is always ok
-    }
-
-    #[test]
-    fn pay_native_is_ceiled_then_capped_at_the_input() {
-        let scale = w(1_000_000_000_000);
-        // payL18 not on the native grid: one more native unit.
-        assert_eq!(div_ceil(w(11_301_759) * scale + w(1), scale), Ok(w(11_301_760)));
-        assert_eq!(div_ceil(w(11_301_759) * scale, scale), Ok(w(11_301_759)));
-        // The cap: `if (p.payNative > loanIn) p.payNative = loanIn` (FLAMMLeverLib.sol:141).
-        let loan_in = w(11_301_759);
-        let mut pay = div_ceil(loan_in * scale + w(1), scale).unwrap();
-        if pay > loan_in {
-            pay = loan_in;
-        }
-        assert_eq!(pay, loan_in);
     }
 
     #[test]

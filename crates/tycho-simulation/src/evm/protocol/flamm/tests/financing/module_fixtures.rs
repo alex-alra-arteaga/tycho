@@ -100,7 +100,11 @@ fn mm_irm_grid() {
         };
         let got = irm::borrow_rate(&m, r.rate_at_target.0, fx.timestamp);
         if !r.err.is_empty() {
-            assert_eq!(got, Err(FlammError::PanicArithmetic), "row {i}");
+            // The recorded revert data decides the class, as `irm_edges` does it; a row whose
+            // data maps to nothing fails rather than passing against a hard-coded guess.
+            let want = revert_of_hex(&r.err)
+                .unwrap_or_else(|| panic!("row {i}: unmapped revert {}", r.err));
+            assert_eq!(got, Err(want), "row {i}");
             continue;
         }
         let (rate, end) = got.unwrap_or_else(|e| panic!("row {i}: {e}"));

@@ -13,8 +13,11 @@
 //! `feed:<f>:<name>` for the four Chainlink feeds ([`super::feeds`]). A FLAMM-owned word that is
 //! absent was never written (the contracts are tracked from their creation, and a write of zero
 //! to a zero slot is no storage change) and reads as zero, except the words the pinned code
-//! writes non-zero when it constructs the contract, which the decoder requires
-//! ([`Words::required_owned`]); an absent Morpho, IRM or feed word is unknown and the decoder
+//! writes non-zero when it constructs the contract, which the decoder requires to be present
+//! ([`Words::required_owned`]): the `EverlongHook` `Params` and `Tuning` rows (slots 0, 4, 5, 6),
+//! its support, anchor, reservation price and book (10-18 and 20), the `LeverageSpreadHook`'s
+//! only word, the `PriceFeed` token pair of each registered token, `FLAMMStore`'s configuration
+//! rows and the share supply. An absent Morpho, IRM or feed word is unknown and the decoder
 //! refuses to quote.
 
 use std::collections::BTreeMap;
@@ -167,6 +170,13 @@ impl<'a> Words<'a> {
     /// contract, so that it is in the stream from the component's creation on and its absence
     /// is a lost word, not a zero: `Missing` rather than zero, because zero would decode into a
     /// state that quotes a different amount instead of refusing.
+    ///
+    /// The guard is on presence, not on value: a present word is decoded whatever it holds,
+    /// including 32 zero bytes or an empty `0x`. It is therefore a construction-time
+    /// completeness check over the words [`super::decoder::decode_core`] marks required, not a
+    /// general lost-word detector — the words the constructor leaves for the first fill or the
+    /// first observation (`EverlongHook`'s `idleStable`, `idleVolatile` and `rvWad`) are read
+    /// through [`Words::owned`] and a lost one of those still decodes.
     pub fn required_owned(&self, role: &str, slot: U256) -> Result<U256, WordError> {
         self.required_word(&word_name(role, slot))
     }

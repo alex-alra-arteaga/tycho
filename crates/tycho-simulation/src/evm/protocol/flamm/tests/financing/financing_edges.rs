@@ -997,16 +997,59 @@ fn settle_edges() {
     rep.finish(rows.len() - 1);
 }
 
-/// The gate module the settlement legs assert through is the one the edge rows drive.
+/// `FLAMMGateLib.book` (`FLAMMGateLib.sol:153-163`, ported as `gate::book_of`) assembles the book
+/// the settlement legs and `assertGate` read: one leg per pool loan, its `liquid` and `scale` from
+/// the pool's loan configuration and its `supplied` / `debt` from the Router's positions at the
+/// same index, with the physical balance and the posted collateral on the book itself. Every row of
+/// the gate edge fixture is replayed through it, including the 23 rows whose Router carries fewer
+/// legs than the pool has loans, where the chain's `sup[i]` (`:161`) is `Panic(0x32)`.
 #[test]
 fn gate_book_shape() {
-    let r = Router::default();
-    let p = Pool::default();
-    assert_eq!(
-        gate::book_of(&p, &r, 0)
-            .unwrap()
-            .legs
-            .len(),
-        0
-    );
+    let rows: Vec<GateRow> = load("edges/gate_edges.json.gz");
+    let (mut full, mut short) = (0, 0);
+    for (ri, r) in rows.iter().enumerate().skip(1) {
+        let inp = &r.input;
+        let mut pool = Pool { physical: inp.physical.0, ..Default::default() };
+        for i in 0..inp.n {
+            pool.loans.push(LoanCfg {
+                scale: inp.scale[i].0,
+                liquid: inp.liquid[i].0,
+                ..Default::default()
+            });
+        }
+        let fr = FakeRouter {
+            sup: inp.supplied[..inp.router_legs]
+                .iter()
+                .map(|d| d.0)
+                .collect(),
+            debt: inp.debt[..inp.router_legs]
+                .iter()
+                .map(|d| d.0)
+                .collect(),
+            posted: inp.posted.0,
+            // `book_of` reads positions only; quarantine is the assert path's.
+            q: Vec::new(),
+        };
+        let ctx = format!("row {ri} {}", inp.tag);
+        let got = gate::book_of(&pool, &fr, 0);
+        if inp.router_legs < inp.n {
+            assert_eq!(got, Err(FlammError::PanicIndex), "{ctx}");
+            short += 1;
+            continue;
+        }
+        let b = got.unwrap_or_else(|e| panic!("{ctx}: {e}"));
+        assert_eq!(b.physical, inp.physical.0, "{ctx} physical");
+        assert_eq!(b.posted, inp.posted.0, "{ctx} posted");
+        assert_eq!(b.legs.len(), inp.n, "{ctx} legs");
+        for (i, l) in b.legs.iter().enumerate() {
+            assert_eq!(l.liquid, inp.liquid[i].0, "{ctx} leg {i} liquid");
+            assert_eq!(l.supplied, inp.supplied[i].0, "{ctx} leg {i} supplied");
+            assert_eq!(l.debt, inp.debt[i].0, "{ctx} leg {i} debt");
+            assert_eq!(l.scale, inp.scale[i].0, "{ctx} leg {i} scale");
+        }
+        full += 1;
+    }
+    eprintln!("[book] {full} books assembled, {short} refused for a short Router");
+    assert_eq!(full, 492);
+    assert_eq!(short, 23);
 }

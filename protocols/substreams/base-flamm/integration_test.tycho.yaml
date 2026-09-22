@@ -8,9 +8,16 @@ module_name: "map_protocol_changes"
 # router's, account's, price feed's and factory's storage words, the Morpho Blue market and position words, the
 # IRM rate, and the Chainlink rounds), decoded by the `flamm` ProtocolSim in tycho-simulation. No VM adapter.
 
-# Component balances are the pool's tradable inventory as the contracts count it (physical cbBTC plus the
-# collateral posted on Morpho; liquid USDC plus the recognized Morpho supply), not the pool contract's ERC-20
-# balances: a sell borrows USDC on Morpho and posts cbBTC there, so the pool's own balance is not its inventory.
+# Two grounds, each on its own sufficient. First, the harness reads every component id as a contract address
+# and calls `balanceOf` on it (`validate_token_balances`: `Address::from_str(id).expect("Failed to parse
+# component address")`), and the lever-up component's id is not an address: it is 32 bytes, the pool address
+# followed by a venue discriminator (`lever_up_component_id`). With the check on, that component does not fail
+# it, it panics the harness before any balance is read. Second, component balances are the pool's tradable
+# inventory as the contracts count it (physical cbBTC plus the collateral posted on Morpho; liquid USDC plus
+# the recognized Morpho supply), not the pool contract's ERC-20 balances: a sell borrows USDC on Morpho and
+# posts cbBTC there, so the pool's own balance is not its inventory. What the harness cannot check the package
+# asserts against the contracts' own views instead (`swap_block_updates_the_words_the_fill_moved_and_the_inventory`
+# against `testdata/snapshot_51302915.json`).
 skip_balance_check: true
 
 tests:
@@ -116,8 +123,8 @@ tests:
         skip_execution: true # nothing to execute while the venue cannot quote (see skip_simulation)
 
   # Creation, the curator's activation (51298416) and the pool's first settled swap (51302916, 15000 sats ->
-  # 11301759 USDC). At the stop block the swap component quotes both directions from the indexed attributes;
-  # execution waits for the executor's registration with the harness (see the component's skip_execution). The
+  # 11301759 USDC). At the stop block the swap component quotes both directions from the indexed attributes
+  # and the harness executes the quoted sizes through the FLAMMExecutor on a fork of the stop block. The
   # lever-up component cannot be simulated: leverage is paused on chain at the stop block (until 51433699; a
   # live spread after the unpause would make the venue quotable, which no fixture covers yet).
   - name: test_activation_and_first_swap
@@ -174,11 +181,10 @@ tests:
         # no adapter here). The harness quotes 0.1%, 1% and 10% of `get_limits`, the largest size the pool
         # fills in full per direction, at the execution block after the stop block.
         skip_simulation: false
-        # Execution needs the FLAMMExecutor registered with the harness: `protocols/testing/fixtures/FLAMM.runtime.json`
-        # and the `flamm` row of `EXECUTOR_MAPPING` in `protocols/testing/src/execution.rs`, which the execution
-        # branch (feat/flamm-execution) adds. Whichever of the two lands second sets this to false, and the harness
-        # then executes the quoted sizes through the executor.
-        skip_execution: true
+        # The harness executes the quoted sizes through the FLAMMExecutor, registered with it by
+        # `protocols/testing/fixtures/FLAMM.runtime.json` and the `flamm` row of `EXECUTOR_MAPPING` in
+        # `protocols/testing/src/execution.rs`.
+        skip_execution: false
       - id: "0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572000000000000000000000001"
         tokens:
           - "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf" # cbBTC (pool asset, 8 dp)
