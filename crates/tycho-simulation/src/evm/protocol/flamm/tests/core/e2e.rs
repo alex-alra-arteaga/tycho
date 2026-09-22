@@ -693,8 +693,9 @@ fn edge_grid_sensitivity() {
         ("cb_maxprice", "cb_maxprice_eq", Box::new(move |s| s.feed.asset.round.answer += one)),
         // The two pause bits and the feature mask (`FLAMMStore.sol:190-200`, `:362`): `paused`
         // stops every swap and lever, `levPaused` only the lever venue, and a cleared feature bit
-        // its own direction. The lever bits are perturbed on `armed_min`, whose lever venue is
-        // the one that quotes; `live` is levPaused on chain.
+        // its own direction. `live` is levPaused on chain, so the `lev_paused` case CLEARS the
+        // bit: the port then quotes a lever venue the chain refuses. `feature_leverage` is the
+        // one perturbed on `armed_min`, whose lever venue is the one that quotes.
         ("paused", "live", Box::new(|s| s.paused = true)),
         ("lev_paused", "live", Box::new(|s| s.lev_paused = false)),
         ("feature_swap_sell", "live", Box::new(|s| s.pool.features &= !FEATURE_SWAP_SELL)),
