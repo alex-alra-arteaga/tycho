@@ -51,7 +51,7 @@ impl SwapEncoder for HashflowSwapEncoder {
                 "Estimated amount in is mandatory for a Hashflow swap".to_string(),
             ))?
             .clone();
-        let sender = encoding_context
+        let router_address = encoding_context
             .router_address
             .clone()
             .ok_or(EncodingError::FatalError(
@@ -65,8 +65,8 @@ impl SwapEncoder for HashflowSwapEncoder {
                         amount_in,
                         token_in: swap.token_in().address.clone(),
                         token_out: swap.token_out().address.clone(),
-                        sender: sender.clone(),
-                        receiver: sender,
+                        sender: router_address.clone(),
+                        receiver: router_address,
                     })
                     .await
             })
@@ -78,6 +78,7 @@ impl SwapEncoder for HashflowSwapEncoder {
             "pool",
             "external_account",
             "trader",
+            "effective_trader",
             "base_token",
             "quote_token",
             "base_token_amount",
@@ -103,6 +104,10 @@ impl SwapEncoder for HashflowSwapEncoder {
 
     fn executor_address(&self) -> &Bytes {
         &self.executor_address
+    }
+
+    fn blocks_on_quote(&self) -> bool {
+        true
     }
 
     fn clone_box(&self) -> Box<dyn SwapEncoder> {
@@ -195,6 +200,10 @@ mod test {
                 Bytes::from_str("0xcd09f75e2bf2a4d11f3ab23f1389fcc1621c0cc2").unwrap(),
             ),
             (
+                "effective_trader".to_string(),
+                Bytes::from_str("0x1111111111111111111111111111111111111111").unwrap(),
+            ),
+            (
                 "base_token".to_string(),
                 Bytes::from_str("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48").unwrap(),
             ),
@@ -230,10 +239,12 @@ mod test {
                 });
         let hashflow_calldata = Bytes::from(hashflow_quote_data_values);
         let hashflow_state = MockRFQState {
+            quote_amount_in: None,
             quote_amount_out,
             quote_data: hashflow_quote_data
                 .into_iter()
                 .collect(),
+            ..Default::default()
         };
 
         let token_in = Bytes::from("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"); // USDC

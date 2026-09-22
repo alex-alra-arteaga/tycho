@@ -27,10 +27,10 @@ from being stored in the shell history.
    export BLOCKCHAIN_EXPLORER_API_KEY=<blockchain-explorer-api-key>
    ```
 
-On chains whose explorer is Blockscout (`robinhood`), verification needs no key — set
-`BLOCKCHAIN_EXPLORER_API_KEY=empty`. Anonymous requests are rate limited; if verification returns
-`Too many requests`, use a free Pro key from [dev.blockscout.com](https://dev.blockscout.com) (starts with `proapi_`)
-as the value instead.
+On Robinhood Chain (`robinhood`), leave `BLOCKCHAIN_EXPLORER_API_KEY` unset.
+
+If verification reports that Blockscout has not indexed the contract, re-run the deploy script
+later. Re-running skips a deployment that already exists.
 
 ## Deploy Tycho Router
 
@@ -40,8 +40,12 @@ The FeeCalculator must be deployed **before** the TychoRouterV3, as the router r
 
 1. Define the `ROUTER_FEE_SETTER` address for your network in `scripts/roles.json`. The first
    address receives `ROUTER_FEE_SETTER_ROLE` to manage fee configuration.
-2. Deploy: `npx hardhat run scripts/deploy-fee-calculator.js --network NETWORK`
-3. Note the deployed address — you will need it in the next step.
+2. Define `ROUTER_FEE_RECEIVER` for your network in the same file. The first address is passed to
+   the constructor and owns the vault balance every router fee is credited to, so it must be an
+   address that can call `withdraw()` on the router. It is a constructor argument because the
+   deployment goes through the CREATE2 factory, which can never withdraw.
+3. Deploy: `npx hardhat run scripts/deploy-fee-calculator.js --network NETWORK`
+4. Note the deployed address — you will need it in the next step.
 
 ### Deploy executors
 
@@ -63,7 +67,7 @@ The FeeCalculator must be deployed **before** the TychoRouterV3, as the router r
 Via the safe wallet UI:
 
 5. Set the executors addresses
-6. Set fee amounts and router fee receiver in FeeCalculator
+6. Set fee amounts in FeeCalculator
 7. Set the pauser wallets
 ### Revoke roles
 
