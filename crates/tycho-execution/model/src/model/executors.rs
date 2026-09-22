@@ -339,7 +339,7 @@ impl Executor {
                     output_to_router: false,
                 })
             }
-            // https://github.com/propeller-heads/tycho/blob/main/crates/tycho-execution/contracts/src/executors/FLAMMExecutor.sol
+            // https://github.com/propeller-heads/tycho/blob/9323e6dfc975d5cd593061ff95e4f6094fceb44f/crates/tycho-execution/contracts/src/executors/FLAMMExecutor.sol
             // Both venues (the trailing venue byte, data[60:61]) debit the pool named in the data
             // the same way, so the byte is not requested here.
             Self::FLAMM => Ok(TransferData {
@@ -669,7 +669,7 @@ impl Executor {
                 // the actual swap logic doesn't matter
                 Ok(())
             }
-            // https://github.com/propeller-heads/tycho/blob/main/crates/tycho-execution/contracts/src/executors/FLAMMExecutor.sol
+            // https://github.com/propeller-heads/tycho/blob/9323e6dfc975d5cd593061ff95e4f6094fceb44f/crates/tycho-execution/contracts/src/executors/FLAMMExecutor.sol
             // The executor accepts only pools the FLAMM factory created, but creation is
             // permissionless and the creator chooses the hooks the pool calls into, so the pool is
             // caller-controlled code as far as the router is concerned. The executor never moves
@@ -841,7 +841,7 @@ impl Executor {
             )?,
             // https://github.com/propeller-heads/tycho-indexer/blob/ae386ce3a9decbf8d73dab474e80a3d3785f02ef/crates/tycho-execution/contracts/src/executors/LunarBaseExecutor.sol#L37
             Self::LunarBase => Address::Router,
-            // https://github.com/propeller-heads/tycho/blob/main/crates/tycho-execution/contracts/src/executors/FLAMMExecutor.sol
+            // https://github.com/propeller-heads/tycho/blob/9323e6dfc975d5cd593061ff95e4f6094fceb44f/crates/tycho-execution/contracts/src/executors/FLAMMExecutor.sol
             Self::FLAMM => Address::Router,
             // https://github.com/propeller-heads/tycho/blob/main/crates/tycho-execution/contracts/src/executors/PropAMMExecutor.sol
             Self::PropAMM => params.request(
