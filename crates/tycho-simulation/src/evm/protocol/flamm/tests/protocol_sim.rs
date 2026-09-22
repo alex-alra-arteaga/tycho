@@ -38,6 +38,7 @@ use crate::{
             decoder::{lever_up_id, swap_id, DecodeError, Statics},
             error::FlammError,
             flamm_filter,
+            math::WAD,
             sim::{GAS_LEVER_UP, GAS_SWAP_BUY, GAS_SWAP_SELL},
             state::{FEATURE_SWAP_BUY, FEATURE_SWAP_SELL},
             FlammPoolState, VenueKind, PROTOCOL_SYSTEM,
@@ -53,6 +54,10 @@ use crate::{
 /// The three recorded snapshots (`testdata/README.md` section 5): the parent of the first swap,
 /// a block with the pool's first debt, and a later one with supply as well.
 const SNAPSHOT_BLOCKS: &[u64] = &[51_302_915, 51_313_000, 51_409_000];
+
+/// A mutation applied to a decoded pool to shut one gate, so a test can assert what the
+/// simulator answers once that gate is closed.
+type Perturb = Box<dyn Fn(&mut crate::evm::protocol::flamm::Flamm)>;
 const POOL: &str = "0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572";
 const CBBTC: &str = "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf";
 const USDC: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
@@ -1554,6 +1559,21 @@ fn snapshot_decoding_fails_closed() {
         matches!(&drift, Err(InvalidSnapshotError::ValueError(m)) if m.contains("drift")),
         "{drift:?}"
     );
+    // `Params.aWad` (hook slot 0, low 16 bytes) and `_sup.aWad` (hook slot 0x0a) are one value
+    // held twice, written together by the constructor (`EverlongHook.sol:157-158`) and by
+    // `setCurveConfig` (`:289-290`): a copy that disagrees is a corrupted word, not a pool.
+    let a_wad_drift = with(&|c| {
+        let k = "hook:0x000000000000000000000000000000000000000000000000000000000000000a";
+        let one_off = U256::from_be_slice(&c.state.attributes[k]) + U256::from(1u8);
+        c.state
+            .attributes
+            .insert(k.into(), Bytes::from(one_off.to_be_bytes::<32>().to_vec()));
+    });
+    assert!(
+        matches!(&a_wad_drift, Err(InvalidSnapshotError::ValueError(m))
+            if m.contains("Params.aWad is not _sup.aWad")),
+        "{a_wad_drift:?}"
+    );
     let two_venues = with(&|c| {
         c.state.attributes.insert(
             "router:0x627459f28fd627023883d9310c65240762faa343d3f2429d1746640d8d8a0577".into(),
@@ -1866,7 +1886,7 @@ fn fee_and_spot_refuse_what_the_gate_refuses() {
         assert!(live.fee() > 0.0 && live.fee() < 1.0, "block {block}: {}", live.fee());
         assert!(live.spot_price(&us, &cb).is_ok());
         assert!(live.spot_price(&cb, &us).is_ok());
-        let shut: [(&str, Box<dyn Fn(&mut crate::evm::protocol::flamm::Flamm)>); 3] = [
+        let shut: [(&str, Perturb); 3] = [
             ("paused", Box::new(|f| f.paused = true)),
             ("FEATURE_SWAP_SELL", Box::new(|f| f.pool.features &= !FEATURE_SWAP_SELL)),
             ("pegBroken", Box::new(|f| f.feed.loans[0].peg_band_wad = U256::from(1u8))),
@@ -1901,6 +1921,153 @@ fn fee_and_spot_refuse_what_the_gate_refuses() {
         // The sell's fee is the sell's gate: the buy's bit does not touch it.
         assert_eq!(state.fee(), live.fee(), "block {block}");
         assert!(state.spot_price(&us, &cb).is_ok(), "block {block}");
+    }
+}
+
+/// The `armed` scenario of the pool-core grid at 51302915: the curator unpaused the lever-up
+/// venue and the keeper posted a 17500 ppm spread at the block's timestamp.
+fn armed_lever_pool(snap: &Snapshot) -> crate::evm::protocol::flamm::Flamm {
+    for line in fixture_lines("core_e2e_grid_51302915.jsonl.gz") {
+        let row: Value = serde_json::from_str(&line).unwrap();
+        if row["tag"] == "armed" && row["k"] == "state" {
+            let armed = build_state(&decode_reads(&row["s"]));
+            assert!(!armed.lev_paused, "block {}", snap.number());
+            return armed;
+        }
+    }
+    panic!("the armed state row");
+}
+
+/// The lever-up venue's `fee()` answers only while `_planUp` would reach the spread at all.
+/// `_open` (`FLAMMLeverLib.sol:80-88`) is its first line, but its second is `FLAMMStore.price($)`
+/// (`:92`), which reverts `StalePrice` once the POOL asset's Chainlink round is past its
+/// heartbeat. `_open` never reads that feed - its `pegOk($, 0)` reads the loan asset's - so a
+/// reader gated on `_open` alone still quotes the clamped spread for a venue whose every fill
+/// reverts. The heartbeat is the boundary: at it the venue fills and the spread is its fee, one
+/// second past it nothing fills and the fee is `1.0`, with the venue's gate and its spread hook
+/// both still answering.
+#[test]
+fn the_lever_fee_refuses_a_stale_pool_asset_feed() {
+    let (cb, us) = (cbbtc(), usdc());
+    let snap = Snapshot::load(51_302_915);
+    let armed = armed_lever_pool(&snap);
+    let updated_at = armed
+        .feed
+        .asset
+        .round
+        .updated_at
+        .to::<u64>();
+    // The keeper's post follows the clock, so the spread is live at both clocks below and the
+    // pool asset's round is the only thing that differs between them.
+    let at = |block: u64, clock: u64| -> FlammPoolState {
+        let mut f = armed.clone();
+        f.hooks
+            .spread
+            .everlong_spread
+            .as_mut()
+            .expect("the armed pool posts a spread")
+            .last_set_ts = U256::from(clock);
+        let mut state = decoded(&snap, 1).with_flamm(f);
+        state.apply_block(&BlockContext::new(block, clock));
+        state
+    };
+
+    let live = at(51_399_999, updated_at + 3600);
+    assert!(live
+        .flamm()
+        .unwrap()
+        .price(live.clock())
+        .is_ok());
+    assert!((live.fee() - 0.0175).abs() < 1e-12, "{}", live.fee());
+    assert!(live.spot_price(&us, &cb).is_ok());
+    let (a, _) = live
+        .get_limits(cb.address.clone(), us.address.clone())
+        .unwrap();
+    assert!(a > BigUint::ZERO, "the venue fills at the heartbeat");
+    assert!(live.get_amount_out(a, &cb, &us).is_ok());
+
+    // One second on, the pool asset's round is stale and `FLAMMStore.price` reverts.
+    let stale = at(51_400_000, updated_at + 3601);
+    let now = stale.clock();
+    let f = stale.flamm().unwrap();
+    // Neither the gate `_open` runs nor the spread hook is what shuts the venue here: both
+    // still answer, and the spread is the same 17500 ppm the live clock fills at.
+    assert_eq!(f.lever_open(true, now), Ok(()));
+    assert_eq!(f.lever_spread(&f.pool, true, now), Ok((U256::from(17_500u32), true)));
+    assert_eq!(f.price(now), Err(FlammError::StalePrice));
+    // So the venue fills nothing, and neither reader may quote the spread.
+    assert_eq!(
+        stale
+            .get_limits(cb.address.clone(), us.address.clone())
+            .unwrap(),
+        (BigUint::ZERO, BigUint::ZERO)
+    );
+    let e = stale
+        .get_amount_out(BigUint::from(15_000u32), &cb, &us)
+        .unwrap_err();
+    assert!(e.to_string().contains("StalePrice"), "{e}");
+    assert_eq!(stale.fee(), 1.0);
+    assert!(stale.spot_price(&us, &cb).is_err());
+    assert!(stale.spot_price(&cb, &us).is_err());
+}
+
+/// A sell the pool refuses at every size has no fee and no price either. `_plan`'s sell ceiling
+/// is `min(room, funding)`, and `FLAMMGateLib.roomNative` (`FLAMMSwapLib.sol:159`) is read
+/// before `amountIn` is used at all, so a pool whose gate room is zero reverts `RoomExhausted`
+/// (`:166`) for every size, while the buy direction, whose ceiling is the book itself (`:151`),
+/// keeps filling at its own fee and price. The four bits [`Flamm::swap_open`] ports (`:134-141`)
+/// are all open in that state: a levered pool standing at its exposure cap is an ordinary
+/// operational state, not a corrupt one, and the curator's `roomEpsilonWad` reaches it here by
+/// shaving the whole headroom.
+#[test]
+fn fee_and_spot_refuse_a_sell_with_no_room() {
+    let (cb, us) = (cbbtc(), usdc());
+    for &block in SNAPSHOT_BLOCKS {
+        let snap = Snapshot::load(block);
+        let live = decoded(&snap, 0);
+        let now = snap.timestamp();
+        let mut f = live.flamm().unwrap().clone();
+        f.pool.room_epsilon_wad = WAD;
+        let state = live.clone().with_flamm(f);
+        let ctx = format!("block {block}");
+        assert!(
+            state
+                .flamm()
+                .unwrap()
+                .swap_open(0, true, now)
+                .is_ok(),
+            "{ctx}: the gate is shut, the room is not what this pins"
+        );
+        // Every sell reverts, whatever the size, so the sell limit is empty.
+        for a in [1u64, 20_000, 10_000_000] {
+            let e = state
+                .get_amount_out(BigUint::from(a), &cb, &us)
+                .unwrap_err();
+            assert!(e.to_string().contains("RoomExhausted"), "{ctx} {a}: {e}");
+        }
+        assert_eq!(
+            state
+                .get_limits(cb.address.clone(), us.address.clone())
+                .unwrap(),
+            (BigUint::ZERO, BigUint::ZERO),
+            "{ctx}"
+        );
+        assert_eq!(state.fee(), 1.0, "{ctx}");
+        // Buying USDC with cbBTC is the pool-asset-in direction.
+        assert!(state.spot_price(&us, &cb).is_err(), "{ctx}");
+        // The buy direction does not read the room and still fills.
+        assert!(
+            state
+                .get_amount_out(BigUint::from(1_000_000u32), &us, &cb)
+                .is_ok(),
+            "{ctx}"
+        );
+        assert!(state.spot_price(&cb, &us).is_ok(), "{ctx}");
+        assert_eq!(
+            state.spot_price(&cb, &us).unwrap(),
+            live.spot_price(&cb, &us).unwrap(),
+            "{ctx}"
+        );
     }
 }
 
@@ -1941,19 +2108,36 @@ fn the_buy_limit_is_the_traits_soft_limit() {
     assert_eq!(answers(&state, U256::from(9_122u32)), Some(false));
     assert_eq!(answers(&state, U256::from(9_123u32)), Some(true));
     assert_eq!(answers(&state, U256::ZERO), Some(false));
+    // The bound block by block, and what it is worth against the limit. A sweep of every buy in
+    // `1..=20_000` at the three snapshots refuses nothing above 7,683 / 6,888 / 9,122 loan-asset
+    // base units, and the size just above each is a fill. The smallest size the protocol test
+    // harness derives from the limit is a thousandth of it (165,217 / 185,398 / 390,516 units),
+    // so it clears the bound by 21.5x, 26.9x and 42.8x -- the factor of 21 to 43 the module head
+    // and `get_limits` state, which is where that figure comes from.
+    for (block, dust) in [(51_302_915u64, 7_683u32), (51_313_000, 6_888), (51_409_000, 9_122)] {
+        let state = decoded(&Snapshot::load(block), 0);
+        assert_eq!(answers(&state, U256::from(dust)), Some(false), "block {block}: dust");
+        assert_eq!(answers(&state, U256::from(dust + 1)), Some(true), "block {block}: above dust");
+        let smallest = limit_of(&state, &us, &cb) / U256::from(1000u32);
+        let factor = smallest / U256::from(dust);
+        assert!(
+            factor >= U256::from(21u8) && factor <= U256::from(43u8),
+            "block {block}: the harness's smallest size clears the dust bound by {factor}x"
+        );
+    }
 }
 
 /// A refusal that is a property of the pool at this clock is `RecoverableError`, one that is a
 /// property of the size asked for is `InvalidInput` (`SimulationError`: the first says retrying
 /// later may succeed, the second says the input was bad). The pause bits, the feature mask, the
-/// peg band, the feeds and the spread's age are the first kind; the caps, the band and a partial
-/// fill are the second.
+/// peg band, the feeds, the spread's age and the pool's fee floor are the first kind; the caps,
+/// the band and a partial fill are the second.
 #[test]
 fn pool_reverts_are_classified_by_what_causes_them() {
     let (cb, us) = (cbbtc(), usdc());
     let snap = Snapshot::load(51_302_915);
     let live = decoded(&snap, 0);
-    let recoverable: [(&str, Box<dyn Fn(&mut crate::evm::protocol::flamm::Flamm)>); 3] = [
+    let recoverable: [(&str, Perturb); 3] = [
         ("paused", Box::new(|f| f.paused = true)),
         ("FEATURE_SWAP_SELL", Box::new(|f| f.pool.features &= !FEATURE_SWAP_SELL)),
         ("pegBroken", Box::new(|f| f.feed.loans[0].peg_band_wad = U256::from(1u8))),
@@ -1967,6 +2151,25 @@ fn pool_reverts_are_classified_by_what_causes_them() {
             .get_amount_out(BigUint::from(20_000u32), &cb, &us)
             .unwrap_err();
         assert!(matches!(e, SimulationError::RecoverableError(..)), "{what}: {e}");
+    }
+    // A fee floor above anything the fee law can answer refuses BOTH directions at every size:
+    // the law reads the direction and the book, never the size (`swap_fee_wad`). It is therefore
+    // the pool's state, and the two readers agree about which half of the split it belongs to.
+    let mut f = live.flamm().unwrap().clone();
+    f.fee_floor_wad = WAD;
+    let floored = live.clone().with_flamm(f);
+    for (what, tin, tout, size) in [("sell", &cb, &us, 20_000u32), ("buy", &us, &cb, 1_000_000)] {
+        let e = floored
+            .get_amount_out(BigUint::from(size), tin, tout)
+            .unwrap_err();
+        assert!(
+            matches!(&e, SimulationError::RecoverableError(m) if m.contains("FeeOutOfBounds")),
+            "{what}: {e}"
+        );
+        assert!(
+            matches!(floored.spot_price(tout, tin), Err(SimulationError::RecoverableError(..))),
+            "{what}: spot_price"
+        );
     }
     // A size the venue clips is the input's fault, not the state's.
     let over = limit_of(&live, &cb, &us) * U256::from(4u8);
