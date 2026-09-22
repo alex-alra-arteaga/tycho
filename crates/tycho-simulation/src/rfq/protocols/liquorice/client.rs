@@ -1,6 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::SystemTime,
 };
 
@@ -9,7 +13,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use futures::stream::BoxStream;
 use num_bigint::BigUint;
-use reqwest::Client;
+use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use tokio::time::{interval, timeout, Duration};
 use tracing::{debug, error, info, warn};
 use tycho_common::{
@@ -52,6 +56,12 @@ pub struct LiquoriceClient {
     poll_time: Duration,
     quote_timeout: Duration,
     quote_expiry_secs: u64,
+    /// Liquorice issues credentials under two schemes: newer accounts use
+    /// `Authorization: Basic base64(solver:key)`, legacy accounts use the
+    /// separate `solver` + `authorization` headers. We start with Basic and
+    /// permanently fall back to the legacy scheme if it returns 401.
+    #[serde(skip)]
+    use_legacy_auth: Arc<AtomicBool>,
 }
 
 impl LiquoriceClient {
@@ -81,6 +91,7 @@ impl LiquoriceClient {
             poll_time,
             quote_timeout,
             quote_expiry_secs,
+            use_legacy_auth: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -89,6 +100,34 @@ impl LiquoriceClient {
     fn basic_auth_header(&self) -> String {
         let credentials = format!("{}:{}", self.auth_solver, self.auth_key);
         format!("Basic {}", BASE64_STANDARD.encode(credentials.as_bytes()))
+    }
+
+    /// Applies whichever auth scheme is currently active to the request.
+    fn apply_auth(&self, request: RequestBuilder) -> RequestBuilder {
+        if self.use_legacy_auth.load(Ordering::Relaxed) {
+            request
+                .header("solver", &self.auth_solver)
+                .header("authorization", &self.auth_key)
+        } else {
+            request.header("authorization", self.basic_auth_header())
+        }
+    }
+
+    /// Sends a request, retrying once with the legacy auth scheme if the
+    /// server rejects Basic auth. The working scheme is remembered for the
+    /// lifetime of the client.
+    async fn send_authed(
+        &self,
+        build: impl Fn() -> RequestBuilder,
+    ) -> Result<Response, reqwest::Error> {
+        let response = self.apply_auth(build()).send().await?;
+        if response.status() == StatusCode::UNAUTHORIZED
+            && !self.use_legacy_auth.swap(true, Ordering::Relaxed)
+        {
+            warn!("Liquorice Basic auth rejected (401); retrying with legacy solver/authorization headers");
+            return self.apply_auth(build()).send().await;
+        }
+        Ok(response)
     }
 
     fn normalize_tvl(
@@ -262,14 +301,13 @@ impl LiquoriceClient {
         let query_params = vec![("chainId", self.chain.id().to_string())];
 
         let http_client = Client::new();
-        let request = http_client
-            .get(&self.price_levels_endpoint)
-            .query(&query_params)
-            .header("accept", "application/json")
-            .header("authorization", self.basic_auth_header());
-
-        let response = request
-            .send()
+        let response = self
+            .send_authed(|| {
+                http_client
+                    .get(&self.price_levels_endpoint)
+                    .query(&query_params)
+                    .header("accept", "application/json")
+            })
             .await
             .map_err(|e| RFQError::ConnectionError(format!("Failed to fetch price levels: {e}")))?;
 
@@ -451,13 +489,17 @@ impl RFQClient for LiquoriceClient {
             let remaining_time = self.quote_timeout - elapsed;
 
             let http_client = Client::new();
-            let request = http_client
-                .post(&url)
-                .json(&quote_request)
-                .header("accept", "application/json")
-                .header("authorization", self.basic_auth_header());
-
-            let response = match timeout(remaining_time, request.send()).await {
+            let response = match timeout(
+                remaining_time,
+                self.send_authed(|| {
+                    http_client
+                        .post(&url)
+                        .json(&quote_request)
+                        .header("accept", "application/json")
+                }),
+            )
+            .await
+            {
                 Ok(Ok(resp)) => resp,
                 Ok(Err(e)) => {
                     warn!(
@@ -682,6 +724,7 @@ mod tests {
             poll_time: Duration::from_secs(0),
             quote_timeout,
             quote_expiry_secs: 300,
+            use_legacy_auth: Arc::new(AtomicBool::new(false)),
         }
     }
 
