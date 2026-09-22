@@ -360,6 +360,16 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
     /// returns. Runs the same gate and the same reads a plan does up to the fee
     /// ([`Self::swap_open`], the Router positions and the feed at `now`), so a direction the pool
     /// would refuse outright has no fee here rather than the law's number.
+    ///
+    /// The gate bits are not the whole of that for a sell. `_plan` reads the gate room before it
+    /// looks at `amountIn` at all (`FLAMMGateLib.roomNative`, `FLAMMSwapLib.sol:159`), and the
+    /// sell ceiling is `min(room, funding)`, so a zero room is `RoomExhausted` (`:165-166`) for
+    /// every size the pool is ever asked for, no matter how the funding moves. A pool standing
+    /// at its exposure cap is in that state, which is an operational one for a levered pool, and
+    /// it has no sell fee. The funding itself is NOT checked here: it grows with the collateral
+    /// the sell brings in, so a funding that refuses one size can admit a larger one, which is a
+    /// property of the size and belongs to the fill. The buy direction never reads the room
+    /// (its ceiling is the book, `:151`) and keeps its own fee throughout.
     pub fn swap_fee_wad(&self, pool_asset_in: bool, now: u64) -> Result<U256, FlammError> {
         let cfg = self
             .pool
@@ -369,6 +379,9 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
         let mut pool = self.pool.clone();
         let b = priced(&self.feed, &self.router, &mut pool, now)?;
         let (p0, price_ts) = self.swap_open(0, pool_asset_in, now)?;
+        if pool_asset_in && gate::room_native(&pool, &b, 0, gate::exposure_pw(&b)?)?.is_zero() {
+            return Err(FlammError::RoomExhausted);
+        }
         let ctx = gate::context(&b, p0, price_ts, self.share_supply)?;
         let sctx = SwapContext {
             pool: ctx,
