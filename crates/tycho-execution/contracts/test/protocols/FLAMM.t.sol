@@ -67,13 +67,19 @@ abstract contract FLAMMTestBase {
 
     uint256 internal constant BUY_AMOUNT_IN = 10_000_000;
     uint256 internal constant LEVER_UP_AMOUNT_IN = 10_000;
-    /// @dev A live spread the keeper posts to open the venue. At the fork block
-    /// the deployed venue is levPaused and has no live spread: the
+    /// @dev A live spread the keeper posts to open the venue. At FORK_BLOCK the
+    /// deployed venue is levPaused and has no live spread: the
     /// LeverageSpreadHook constructor's 17500 ppm post (lastSetTs at the
-    /// creation) aged past maxSpreadAge = 3600 s and was never re-posted, so
-    /// `spreadPpm` answers `(false, 0)` and a lever-up reverts SpreadUnavailable
-    /// (the curator unpaused the venue on chain at 51433699; the spread is still
-    /// stale there).
+    /// creation) had aged past maxSpreadAge = 3600 s and was never
+    /// re-posted, so `spreadPpm` answers `(false, 0)` and a lever-up reverts
+    /// SpreadUnavailable (the curator unpaused the venue on chain at 51433699;
+    /// the spread is still stale there). That is the state at FORK_BLOCK, not
+    /// the venue today: on 2026-09-22 the curator cleared the staleness window
+    /// at block 51649706 (MaxSpreadAgeSet(0)), so the same constructor post no
+    /// longer lapses and the deployed venue quotes 17500 ppm unprompted -- the
+    /// value this constant re-posts here. Forking past 51649706 to run the
+    /// lever tests against a genuinely open venue is a follow-up; FORK_BLOCK
+    /// must not move, it is the parent of the swap testReplaySwap replays.
     uint24 internal constant LEVER_SPREAD_PPM = 17_500;
 
     uint8 internal constant VENUE_SWAP = 0;
@@ -447,9 +453,12 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
         IERC20(token).approve(FLAMM_POOL, amount);
     }
 
-    /// @dev At the fork block the venue is levPaused and the constructor's
-    /// spread has aged past maxSpreadAge (no live spread): the curator unpauses
-    /// it and the keeper posts a fresh spread.
+    /// @dev At FORK_BLOCK the venue is levPaused and the constructor's spread
+    /// has aged past maxSpreadAge (no live spread): the curator unpauses it and
+    /// the keeper posts a fresh spread. Both are simulated state at this block
+    /// only -- on chain the curator unpaused at 51433699 and cleared the
+    /// staleness window at 51649706, from where the venue quotes without either
+    /// prank (see LEVER_SPREAD_PPM).
     function _openLeverageVenue() internal {
         vm.prank(FLAMM_CURATOR);
         IFLAMMPoolTest(FLAMM_POOL).setLevPaused(false);

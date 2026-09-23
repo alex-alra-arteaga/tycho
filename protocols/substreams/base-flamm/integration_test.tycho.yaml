@@ -119,14 +119,14 @@ tests:
           venue_0_oracle_base_feed_1: "0x64c911996d3c6ac71f9b455b1e8e7266bcbd848f"
           venue_0_oracle_scale_factor: "0x00000000000000000000000000000000000000000052b7d2dcc80cd2e4000000"
         creation_tx: "0x783b464e93692538bde6dc1b53b959087f1e0ba2af3b6bc55ff13a449101d1e0"
-        skip_simulation: true # leverage is paused on chain (levPaused, FLAMMStore.S slot 10 byte 23) from the creation through 51433698; unpaused at 51433699 (LevPauseSet(false), the curator Safe calling FLAMM.setLevPaused(false)), after which every lever-up still reverts SpreadUnavailable (the keeper never re-posted a spread, so the LeverageSpreadHook constructor's 17500 ppm post aged past maxSpreadAge = 3600 s): no quote is possible at either stop block
-        skip_execution: true # nothing to execute while the venue cannot quote (see skip_simulation)
+        skip_simulation: true # no lever-up quote exists at this test's stop block: leverage is paused on chain (levPaused, FLAMMStore.S slot 10 byte 23) from the creation through 51433698, and from the unpause at 51433699 (LevPauseSet(false), the curator Safe calling FLAMM.setLevPaused(false)) every lever-up reverted SpreadUnavailable, the LeverageSpreadHook constructor's 17500 ppm post having aged past maxSpreadAge = 3600 s with no keeper re-post. That is the recorded range only, not the venue today: on 2026-09-22 the curator cleared the age at block 51649706 (MaxSpreadAgeSet(0), tx 0x441839955de1f9bafe77eaaa96a8ba36517ae1c357c218a0f7919e516d22bdd1), so the constructor's post no longer lapses and the venue quotes: at 51670000, previewLever(true, 15000) returns (15000, 12506539, 17500 ppm) and the largest size that fills in full is 4910491 sats -> 3957263752 USDC base units. That block is 515034 past this package's initialBlock, far over the harness's stated ideal of a range below 1,000 blocks, so the fill is pinned in the local replay (crates/tycho-simulation/src/evm/protocol/flamm/tests/e2e.rs over testdata/snapshots/e2e_grids.json.gz at 51649706 and 51670000) rather than in a third hosted range test
+        skip_execution: true # nothing to execute where nothing is quoted at this stop block (see skip_simulation)
 
   # Creation, the curator's activation (51298416) and the pool's first settled swap (51302916, 15000 sats ->
   # 11301759 USDC). At the stop block the swap component quotes both directions from the indexed attributes
   # and the harness executes the quoted sizes through the FLAMMExecutor on a fork of the stop block. The
-  # lever-up component cannot be simulated: leverage is paused on chain at the stop block (until 51433699; a
-  # live spread after the unpause would make the venue quotable, which no fixture covers yet).
+  # lever-up component cannot be simulated: leverage is paused on chain at the stop block (until 51433699, and
+  # the spread post that opens the venue lands at 51649706, past this range; the local replay pins the fill).
   - name: test_activation_and_first_swap
     start_block: 51154966
     stop_block: 51302920
@@ -229,5 +229,5 @@ tests:
           venue_0_oracle_base_feed_1: "0x64c911996d3c6ac71f9b455b1e8e7266bcbd848f"
           venue_0_oracle_scale_factor: "0x00000000000000000000000000000000000000000052b7d2dcc80cd2e4000000"
         creation_tx: "0x783b464e93692538bde6dc1b53b959087f1e0ba2af3b6bc55ff13a449101d1e0"
-        skip_simulation: true # leverage is paused on chain (levPaused, FLAMMStore.S slot 10 byte 23) from the creation through 51433698; unpaused at 51433699 (LevPauseSet(false), the curator Safe calling FLAMM.setLevPaused(false)), after which every lever-up still reverts SpreadUnavailable (the keeper never re-posted a spread, so the LeverageSpreadHook constructor's 17500 ppm post aged past maxSpreadAge = 3600 s): no quote is possible at either stop block
-        skip_execution: true # nothing to execute while the venue cannot quote (see skip_simulation)
+        skip_simulation: true # no lever-up quote exists at this test's stop block: leverage is paused on chain (levPaused, FLAMMStore.S slot 10 byte 23) from the creation through 51433698, and from the unpause at 51433699 (LevPauseSet(false), the curator Safe calling FLAMM.setLevPaused(false)) every lever-up reverted SpreadUnavailable, the LeverageSpreadHook constructor's 17500 ppm post having aged past maxSpreadAge = 3600 s with no keeper re-post. That is the recorded range only, not the venue today: on 2026-09-22 the curator cleared the age at block 51649706 (MaxSpreadAgeSet(0), tx 0x441839955de1f9bafe77eaaa96a8ba36517ae1c357c218a0f7919e516d22bdd1), so the constructor's post no longer lapses and the venue quotes: at 51670000, previewLever(true, 15000) returns (15000, 12506539, 17500 ppm) and the largest size that fills in full is 4910491 sats -> 3957263752 USDC base units. That block is 515034 past this package's initialBlock, far over the harness's stated ideal of a range below 1,000 blocks, so the fill is pinned in the local replay (crates/tycho-simulation/src/evm/protocol/flamm/tests/e2e.rs over testdata/snapshots/e2e_grids.json.gz at 51649706 and 51670000) rather than in a third hosted range test
+        skip_execution: true # nothing to execute where nothing is quoted at this stop block (see skip_simulation)
