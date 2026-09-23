@@ -445,10 +445,18 @@ fn registered_code_is_recognised_at_creation() {
     let creation = fixture("creation");
     let cfg = config();
     let mut changes = Vec::new();
+    // The three the creation block replays code for: the pool proxy and the financing account,
+    // created by the `createPool` transaction itself, and the spread hook, deployed in 51154988.
+    let deployed = [
+        "0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572",
+        "0x6760e3b032ee2d670cb684d9076b8f48cb066c48",
+        "0x04988af54ec88d2de77b191025eaef2fe488f93b",
+    ];
     for (i, (a, c)) in creation["codes"]
         .as_object()
         .unwrap()
         .iter()
+        .filter(|(a, _)| deployed.contains(&a.as_str()))
         .enumerate()
     {
         changes.push(testdata::code_change(
@@ -496,7 +504,7 @@ fn replay_creation() -> (Vec<ProtocolComponent>, tycho_substreams::prelude::Bloc
     let block = testdata::fixture_block(&creation, vec![]);
     let deployments = deployments();
     let deployment = |a: &Address| deployments.get(a).copied();
-    let before = words_map(&creation["words_before"]);
+    let before = words_map(&creation["store_before"]);
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
     let components = components_in_block(&block, &cfg, &deployment, first_word);
     let created: Vec<ProtocolComponent> = components
@@ -582,7 +590,7 @@ fn creation_block_emits_both_components_with_the_snapshot_statics() {
 fn creation_is_refused_without_allowlist_registry_or_immutables() {
     let creation = fixture("creation");
     let block = testdata::fixture_block(&creation, vec![]);
-    let before = words_map(&creation["words_before"]);
+    let before = words_map(&creation["store_before"]);
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
     let deployments = deployments();
     let deployment = |a: &Address| deployments.get(a).copied();
@@ -660,7 +668,7 @@ fn creation_is_refused_for_a_pool_with_a_second_financing_venue() {
     let cfg = config();
     let deployments = deployments();
     let deployment = |a: &Address| deployments.get(a).copied();
-    let before = words_map(&creation["words_before"]);
+    let before = words_map(&creation["store_before"]);
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
     let writes = block_writes(&block, |_, _| true);
     let view = WordView::new(&writes, first_word, &cfg.words);
@@ -728,7 +736,7 @@ fn creation_without_the_leverage_pair_is_indexed_with_zero_hooks() {
     let cfg = config();
     let deployments = deployments();
     let deployment = |a: &Address| deployments.get(a).copied();
-    let before = words_map(&creation["words_before"]);
+    let before = words_map(&creation["store_before"]);
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
     // The pool's words 24 and 25 are never written when the hooks are zero (no storage change
     // for a zero written over zero).
@@ -818,7 +826,7 @@ fn creation_snapshot_carries_every_tracked_word_feed_and_balance() {
         .into_iter()
         .map(|(a, k, n)| (n, (a, k)))
         .collect();
-    let before = words_map(&creation["words_before"]);
+    let before = words_map(&creation["store_before"]);
     for name in &snapshot_names {
         if name.starts_with("feed:mo0:tx:") {
             continue;

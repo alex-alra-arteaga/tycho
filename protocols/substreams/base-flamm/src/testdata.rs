@@ -1,9 +1,13 @@
 // Copyright (c) 2026 Everlong Labs Limited
 //! Real Base data replayed through the modules: the fixtures in `testdata/` (see
 //! `testdata/README.md`) and the synthetic `Block`s built from them.
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    io::Read,
+    sync::OnceLock,
+};
 
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 use substreams_ethereum::pb::eth::v2::{
     block::DetailLevel, Block, BlockHeader, Call, CallType, CodeChange, Log, StorageChange,
     TransactionReceipt, TransactionTrace, TransactionTraceStatus,
@@ -14,10 +18,119 @@ use crate::flamm::{
     keys::{self, parse_address, parse_word, Address, Word},
 };
 
+/// `testdata/e2e_blocks.json.gz`: the tracked words at 51154965 (`seed`) and one stage per block
+/// of interest, in order (`testdata/README.md`). The package's one corpus of real Base data.
+pub fn e2e_blocks() -> &'static Value {
+    static BLOCKS: OnceLock<Value> = OnceLock::new();
+    BLOCKS.get_or_init(|| {
+        let mut raw = Vec::new();
+        flate2::read::GzDecoder::new(include_bytes!("../testdata/e2e_blocks.json.gz").as_slice())
+            .read_to_end(&mut raw)
+            .expect("gzip");
+        serde_json::from_slice(&raw).expect("e2e_blocks.json")
+    })
+}
+
+fn hex_of(v: &Value) -> String {
+    v.as_str()
+        .expect("hex string")
+        .to_string()
+}
+
+/// One block of interest cut out of `e2e_blocks.json.gz`: its header, the transaction of interest
+/// (`tx`, with the `transactionIndex` spelling `fixture_block` reads) and its receipt logs, the
+/// block's own diff over the tracked words (`storage_diffs`), the runtime code and codehash of
+/// every contract deployed up to it (`codes`, `codehashes`) and the two views of the words the
+/// block opens on:
+///
+/// * `store_before`, every tracked word written since 51154965 — the words store as the package
+///   holds it entering the block. A word it lacks was never written, so it reads as the manifest
+///   seed and then as zero, which is what a `WordView` does with it.
+/// * `words_before`, the seed at 51154965 with those writes applied — what `eth_getStorageAt` at
+///   the parent block answers, zero-valued words included.
+pub fn stage(block: u64) -> Value {
+    let fx = e2e_blocks();
+    let seed: BTreeMap<(String, String), String> = fx["seed"]
+        .as_array()
+        .expect("seed")
+        .iter()
+        .map(|w| ((hex_of(&w["address"]), hex_of(&w["slot"])), hex_of(&w["value"])))
+        .collect();
+    let mut store: BTreeMap<(String, String), String> = BTreeMap::new();
+    let mut codes = Map::new();
+    let mut found = None;
+    for st in fx["stages"].as_array().expect("stages") {
+        let number = st["block"]
+            .as_u64()
+            .expect("stage block");
+        if number > block {
+            break;
+        }
+        for w in st["catchup_writes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            store.insert((hex_of(&w["address"]), hex_of(&w["slot"])), hex_of(&w["new"]));
+        }
+        if let Some(c) = st["codes"].as_object() {
+            codes.extend(
+                c.iter()
+                    .map(|(a, v)| (a.clone(), v.clone())),
+            );
+        }
+        if number == block {
+            found = Some(st);
+            break;
+        }
+        for w in st["writes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            store.insert((hex_of(&w["address"]), hex_of(&w["slot"])), hex_of(&w["new"]));
+        }
+    }
+    let mut words = seed;
+    words.extend(
+        store
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone())),
+    );
+    let rows = |m: BTreeMap<(String, String), String>| {
+        m.into_iter()
+            .map(|((address, slot), value)| json!({"address": address, "slot": slot, "value": value}))
+            .collect::<Vec<_>>()
+    };
+    let st = found.unwrap_or_else(|| panic!("no stage for block {block}"));
+    let tx = &st["tx"];
+    json!({
+        "block": block,
+        "header": st["header"],
+        "tx": {
+            "hash": tx["hash"],
+            "from": tx["from"],
+            "to": tx["to"],
+            "input": tx["input"],
+            "transactionIndex": format!("0x{:x}", tx["index"].as_u64().expect("tx index")),
+        },
+        "logs": tx["logs"],
+        "storage_diffs": st["writes"],
+        "store_before": rows(store),
+        "words_before": rows(words),
+        "codehashes": codes
+            .iter()
+            .map(|(a, c)| (a.clone(), c["codehash"].clone()))
+            .collect::<Map<String, Value>>(),
+        "codes": codes,
+    })
+}
+
 pub fn fixture(name: &str) -> Value {
     let raw = match name {
-        "creation" => include_str!("../testdata/creation_51154990.json"),
-        "swap" => include_str!("../testdata/swap_51302916.json"),
+        "creation" => return stage(51_154_990),
+        "activation" => return stage(51_298_416),
+        "swap" => return stage(51_302_916),
         "seeds" => include_str!("../testdata/seeds_51154965.json"),
         "feed_logs" => include_str!("../testdata/feed_logs.json"),
         "snapshot" => include_str!("../testdata/snapshot_51302915.json"),
@@ -150,8 +263,7 @@ pub fn block(
     }
 }
 
-/// A block from a `creation` / `swap` fixture: its one transaction with the fixture's logs and
-/// storage diffs.
+/// A block from a `stage` fixture: its one transaction with the stage's logs and storage diffs.
 pub fn fixture_block(f: &Value, extra_code_changes: Vec<CodeChange>) -> Block {
     let tx = &f["tx"];
     let logs = f["logs"]
