@@ -234,9 +234,12 @@ of the range test (51155010), the curator's activation (51298416), every swap th
 51343234, 51347390, 51420672, 51420867, 51430828), two of its six deposits (51300667, 51426394), one of its
 four withdrawals (51348093, a `redeemToAsset` through the periphery), one of the keeper's recenters (51384803),
 the second stop block (51302920), three recent blocks each carrying a Chainlink round (USDC/USD 51429815,
-cbBTC/USD 51433135, the Morpho oracle's `DualAggregator` 51433218) and the block that unpaused leverage
-(51433699, `LevPauseSet(false)`, the curator Safe calling `FLAMM.setLevPaused(false)`). A block of interest is fed as its own transaction
-carrying the block's storage diff, its receipt logs and its code changes; the net change of every tracked word
+cbBTC/USD 51433135, the Morpho oracle's `DualAggregator` 51433218), the block that unpaused leverage
+(51433699, `LevPauseSet(false)`, the curator Safe calling `FLAMM.setLevPaused(false)`), the block that cleared
+the spread's staleness window and so opened the lever-up venue (51649706, `MaxSpreadAgeSet(0)`, the same Safe
+calling `LeverageSpreadHook.setMaxSpreadAge(0)`) and a later block at which both venues quote (51670000). A
+block of interest is fed as its own transaction carrying the block's storage diff, its receipt logs and its
+code changes; the net change of every tracked word
 between two blocks of interest is fed as one synthetic transaction at the block before the next one (the words
 store and every attribute are functions of the words' values, so the fold after it is the fold the real stream
 reaches after the same blocks). The pool's other deposits (51343943, 51347236, 51347413, 51353593), withdrawals
@@ -305,11 +308,13 @@ Expected output:
 * `test_activation_and_first_swap` (51154966-51302920): both components found and matching; the swap component
   quotes both directions (the largest full fills at 51302920 are 158168 sats and 180858003 USDC base units,
   `previewSwap`'s own edges; the three sizes of each direction fill in full); the lever-up component is
-  skipped (`levPaused` at the stop block: leverage stayed paused until 51433699, and since the unpause every
-  lever-up still reverts `SpreadUnavailable`, the keeper never having re-posted a spread after the
-  `LeverageSpreadHook` constructor's 17500 ppm post aged past `maxSpreadAge = 3600 s`, so no block yet shows
-  the venue quoting; a live spread would make it quotable, which no fixture covers); the swap component's
-  quoted sizes are executed through the `FLAMMExecutor` the harness holds under `flamm`
+  skipped (`levPaused` at the stop block: leverage stayed paused until 51433699, and from the unpause every
+  lever-up still reverted `SpreadUnavailable`, the keeper never having re-posted a spread after the
+  `LeverageSpreadHook` constructor's 17500 ppm post aged past `maxSpreadAge = 3600 s` — until the curator
+  cleared that window at 51649706 (`MaxSpreadAgeSet(0)`), 494740 blocks past `initialBlock` and far past
+  either stop block, from where the venue quotes; the end-to-end replay pins that fill at 51649706 and
+  51670000 instead of a third hosted range test); the swap component's quoted sizes are executed through the
+  `FLAMMExecutor` the harness holds under `flamm`
   (`protocols/testing/fixtures/FLAMM.runtime.json`, the `flamm` row of `EXECUTOR_MAPPING` in
   `protocols/testing/src/execution.rs`) on a fork of the stop block; the lever-up component's execution is
   skipped with its simulation.

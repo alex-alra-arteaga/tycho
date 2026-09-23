@@ -31,10 +31,11 @@
   `updated_at`), the schema's `mo0` set.
 - End to end without the hosted harness (`src/e2e_tests.rs`, `testdata/e2e_blocks.json.gz`): real Base blocks
   from the creator's deployments through the pool's creation, activation, every settled swap, two of the
-  deposits, a withdrawal, a keeper recenter, the range test's stop blocks, three recent Chainlink-round blocks
-  and the block that unpaused leverage (the other deposits, withdrawals and keeper transactions reach the fold
-  through the synthetic catch-up blocks between them), fed to the module cores with the stores kept as the
-  engine keeps them and folded as the indexer and the client hold them; the fold is the stream fixture the
+  deposits, a withdrawal, a keeper recenter, the range test's stop blocks, three recent Chainlink-round blocks,
+  the block that unpaused leverage and the two around the spread hook's `MaxSpreadAgeSet(0)`, which opened the
+  lever-up venue (the other deposits, withdrawals and keeper transactions reach the fold through the synthetic
+  catch-up blocks between them), fed to the module cores with the stores kept as the engine keeps them and
+  folded as the indexer and the client hold them; the fold is the stream fixture the
   `flamm` `ProtocolSim` replays against the chain's own `previewSwap` / `previewLever` answers and every
   settled swap's receipt. The range test's expected components and skip flags are checked against what the
   package emits and the chain justifies. `flate2` is a dev-dependency (the fixtures are gzipped). The recorders
