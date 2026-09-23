@@ -289,9 +289,9 @@ limit, and the empty trade for a revert at or below it, a buy's dust), locate th
 the contract below them (the 0.1% / 1% / 10% sizes the protocol test harness quotes fill in full;
 every sell fills from one sat at these three blocks, at all of which the pool is unpaused; the buys
 the chain refused below the limit are dust, not an interval, quoted as nothing, and bounded
-absolutely rather than as a fraction of the limit — at most 5000 USDC units in the recorded grid, and
-7,683 / 6,888 / 9,122 units when every size is scanned, which is a hundredth of a percent of the
-limit only because the buy limit here is 165M to 391M units),
+absolutely rather than as a fraction of the limit — at most 5000 USDC units in the recorded grid;
+the bound over every scanned size, and the margin the harness's sizes clear it by, are stated with
+`ProtocolSim::get_limits` in `sim.rs` and pinned by `the_buy_limit_is_the_traits_soft_limit`),
 check `spot_price` in the trait's definition against the hook's recorded `spot` and the margin of
 a small quote in the buying direction, run `query_pool_swap` in both directions (a limit between
 the max-size and the zero-size execution price is met inside the limit; one above the zero-size
