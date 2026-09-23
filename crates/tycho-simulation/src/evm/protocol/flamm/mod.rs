@@ -52,33 +52,30 @@
 //! catch-up diffs), block by block as the stream decoder would, against the chain's answers at
 //! every pinned block and every settled swap.
 //!
-//! # Limits
+//! # The trait surface
 //!
-//! `get_limits` returns a size the venue fills in full, and the trait's limit is the soft one
-//! (`ProtocolSim::get_limits`): `[0, limit]` is the domain `get_amount_out` answers on, not a
-//! threshold above which nothing fills. A buy above it can still fill, because the price band is
-//! periodic in the size rather than monotone. Inside `[0, limit]` every size answers, a fill or,
-//! where the pool refuses, the empty trade, so `query_pool_swap` (the generic search) runs on
-//! both venues; the refusals are a buy's dust near zero and the band plateaus just below the
-//! limit. The dust bound is absolute, not a fraction of the limit: the largest refused buy is
-//! 7,683 / 6,888 / 9,122 loan-asset base units at the pinned snapshot blocks 51302915, 51313000
-//! and 51409000, whose buy limits are 165M to 391M, and the smallest size the protocol test
-//! harness derives from the limit, a thousandth of it, clears that bound by a factor of 21 to 43
-//! at those blocks. [`sim`]'s `get_limits`
-//! states the contract in full. `spot_price(base,
-//! quote)` is the trait's price, the `quote` that buys one `base` gross of that direction's
-//! fee; the lever-up venue, which only sells the pool asset, has one rate and answers both
-//! orderings from it (`spot_price(pool asset, loan asset)` is the price of the direction it
-//! trades, as `query_pool_swap` and the harness read it). `fee` is the fee or spread a fill
-//! pays right now, bounded as the pool bounds it. `apply_block` reports a change when a quote
-//! can observe the clock's move: a deadline crossed (a feed's heartbeat, the sequencer grace,
-//! the spread's age, the Morpho oracle's reveal, a scheduled change, the rate ceiling's
-//! verdict) or a pool positioned in its venue, whose debt and supply accrue every second; an
-//! unpositioned pool is quiet between deadlines. A state whose attributes are incomplete, whose
-//! code or wiring the port does not model, whose IRM or oracle cannot be read, whose venue is
-//! quarantined or whose scheduled implementation / hook-set change is executable refuses to
-//! quote rather than guess; at snapshot time [`flamm_filter`] skips such a component instead
-//! of failing the stream. Incomplete means a word the pinned code writes non-zero at
+//! [`sim`] states each method's contract in full, beside the method; this is the map, not a
+//! second copy of it. `get_limits` returns a size the venue fills in full, and the trait's limit
+//! is the soft one (`ProtocolSim::get_limits`): `[0, limit]` is the domain `get_amount_out`
+//! answers on, not a threshold above which nothing fills, so `query_pool_swap` (the generic
+//! search) runs on both venues. Inside `[0, limit]` every size answers, a fill or, where the pool
+//! refuses, the empty trade; the refusals are a buy's dust near zero and the band plateaus just
+//! below the limit. That the dust bound is absolute rather than a fraction of the limit, what it
+//! measures at the pinned blocks and by how much the sizes a consumer derives from the limit
+//! clear it are stated once, with `get_limits`. `spot_price(base, quote)` is the trait's price,
+//! the `quote` that buys one `base` gross of that direction's fee; the lever-up venue, which only
+//! sells the pool asset, has one rate and answers both orderings from it. `fee` is the fee or
+//! spread a fill pays right now, bounded as the pool bounds it. `apply_block` reports a change
+//! when a quote can observe the clock's move: a deadline crossed (a feed's heartbeat, the
+//! sequencer grace, the spread's age, the Morpho oracle's reveal, a scheduled change, the rate
+//! ceiling's verdict) or a pool positioned in its venue, whose debt and supply accrue every
+//! second; an unpositioned pool is quiet between deadlines.
+//!
+//! A state whose attributes are incomplete, whose code or wiring the port does not model, or that
+//! falls outside the quotable envelope ([`sim`]'s `quotable`, which states what the envelope
+//! refuses and where it is stricter than the chain) refuses to quote rather than guess; at
+//! snapshot time [`flamm_filter`] skips such a component instead of failing the stream.
+//! Incomplete means a word the pinned code writes non-zero at
 //! construction is absent: the `EverlongHook` `Params` and `Tuning` rows (slots 0, 4, 5, 6), its
 //! support, anchor, reservation price and book (10-18 and 20), the `LeverageSpreadHook`'s only
 //! word, each registered `PriceFeed` token's word pair, `FLAMMStore`'s configuration rows and the

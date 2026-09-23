@@ -64,8 +64,8 @@ pub struct Book {
 
 /// `IFLAMMHooks.FillResult` (`IFLAMMHooks.sol:42-47`): the input consumed, the gross output, the
 /// fee retained on it, and the post-fill spot in the pool's price units. `cap_evals` is not part of
-/// the on-chain struct: it counts the curve solves `_maxInForGrossCap` ran for the fill, which a
-/// settlement's gas grows with.
+/// the on-chain struct: it counts the curve solves `_maxInForGrossCap` ran for the fill, so it is
+/// non-zero exactly where the cap clipped the input.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FillResult {
     pub amount_in_used: U256,

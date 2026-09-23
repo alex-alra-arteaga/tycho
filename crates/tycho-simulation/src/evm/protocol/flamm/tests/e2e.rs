@@ -341,10 +341,10 @@ fn check_grids(
                 Ok(words) if words[0] == a => {
                     let q = quote.unwrap_or_else(|e| panic!("{ctx}: full fill refused: {e}"));
                     assert_eq!(q.amount, u256_to_biguint(words[1]), "{ctx}: amount out");
-                    assert!(
-                        q.gas >= BigUint::from(if dir { GAS_SWAP_SELL } else { GAS_SWAP_BUY }),
-                        "{ctx}: gas {}",
-                        q.gas
+                    assert_eq!(
+                        q.gas,
+                        BigUint::from(if dir { GAS_SWAP_SELL } else { GAS_SWAP_BUY }),
+                        "{ctx}: gas"
                     );
                     full += 1;
                 }
@@ -468,7 +468,7 @@ fn check_grids(
                 .get_amount_out(u256_to_biguint(probe), &cb, &us)
                 .unwrap_or_else(|e| panic!("block {block}: lever-up 15000 refused: {e}"));
             assert_eq!(q.amount, u256_to_biguint(out_of(probe)), "block {block}: lever-up 15000");
-            assert!(q.gas >= BigUint::from(GAS_LEVER_UP), "block {block}: lever-up gas {}", q.gas);
+            assert_eq!(q.gas, BigUint::from(GAS_LEVER_UP), "block {block}: lever-up gas");
         }
     }
     (rows, full)
@@ -508,7 +508,7 @@ fn stream_replays_into_exact_quotes() {
                 .get_amount_out(u256_to_biguint(used), tin, tout)
                 .unwrap_or_else(|e| panic!("{ctx}: {e}"));
             assert_eq!(q.amount, u256_to_biguint(out), "{ctx}: amount out");
-            assert!(q.gas >= BigUint::from(if sell { GAS_SWAP_SELL } else { GAS_SWAP_BUY }));
+            assert_eq!(q.gas, BigUint::from(if sell { GAS_SWAP_SELL } else { GAS_SWAP_BUY }));
             // The requested size, when the calldata gives it, was filled in full.
             if let Some(requested) = sw["amount_in"].as_str() {
                 assert_eq!(U256::from_str_radix(requested, 10).unwrap(), used, "{ctx}: clipped");
