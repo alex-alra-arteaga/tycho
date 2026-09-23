@@ -220,11 +220,11 @@ pub const DIGESTS: &[(&str, &str)] = &[
     // The substreams' stream and the chain's answers along it (README section 6).
     (
         "snapshots/e2e_stream.json.gz",
-        "06b482655e2b24d600494d617999cf84c50ec2682e4661d7ee97ea8bfe2f43e0",
+        "05dfc64de3d8360585f3f59fb1e7450ad3ad27605489ff8b11396a23e4caea6e",
     ),
     (
         "snapshots/e2e_grids.json.gz",
-        "e6636e338627c8569d606b29da6a3b901c1b104057a5b790e87b66aa6c61d0c3",
+        "6eb61a17ae741a6416985cf2c2f3e32e0126b2e481a3022554d7ea90c3e731e5",
     ),
 ];
 

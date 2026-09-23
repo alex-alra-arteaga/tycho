@@ -333,16 +333,23 @@ Postgres; see the package README, "End to end, without the hosted harness").
   two of its six deposits (51300667, 51426394), one of its four withdrawals (51348093), one of
   the keeper's recenters (51384803), 51302915, the second stop block 51302920, three recent
   blocks each carrying a Chainlink round (51429815 USDC/USD, 51433135 cbBTC/USD, 51433218 the
-  Morpho oracle's `DualAggregator`) and the block that unpaused leverage (51433699,
-  `LevPauseSet(false)`); between two blocks of interest the net change of every tracked word is
+  Morpho oracle's `DualAggregator`), the block that unpaused leverage (51433699,
+  `LevPauseSet(false)`), the block that cleared the spread's staleness window and so opened the
+  lever-up venue (51649706, `MaxSpreadAgeSet(0)`) and a later block at which both venues quote
+  (51670000); between two blocks of interest the net change of every tracked word is
   one synthetic block at the parent of the next one, which is how the pool's other deposits
   (51343943, 51347236, 51347413, 51353593), withdrawals (51344221, 51347256, 51353599) and keeper
   recenters and pokes reach the fold (their net effect, not their own per-block deltas).
 - `snapshots/e2e_grids.json.gz` is the chain's answers: `grids` per pinned block (51155010,
-  51298416, 51302916, 51302920, 51348093, 51384803, 51429815, 51433135, 51433218, 51433699), the
-  same recorder and layout as section 5 (`previewSwap` over the log-spaced grid and every probe
-  of the edge search, `sell_edge` / `buy_edge`, `previewLever`, `spot`; at 51155010 only a few
-  sizes, the pool being paused), and `swaps` / `deposits`, the pool's settled fills decoded from
+  51298416, 51302916, 51302920, 51348093, 51384803, 51429815, 51433135, 51433218, 51433699,
+  51649706, 51670000), the same recorder and layout as section 5 (`previewSwap` over the
+  log-spaced grid and every probe of the edge search, `sell_edge` / `buy_edge`, `previewLever`,
+  `spot`; at 51155010 only a few sizes, the pool being paused), plus `lever_edge` at the blocks
+  where the lever-up venue fills — the largest fully consumed `previewLever(true, .)` size,
+  located by the same doubling and bisection, which is what that venue's `get_limits` answers.
+  The field is absent where no size fills: a lever-up refuses on the pause and the spread before
+  the size is looked at, so at 51155010-51433699 every recorded row is a refusal and there is no
+  edge to locate. Then `swaps` / `deposits`, the pool's settled fills decoded from
   their receipts (`Swap(sender, to, poolAssetIn, amountInUsed, amountOut, feeOut, feeWad,
   spotAfterWad)`; `amount_in` from the calldata when the swap went through
   `FLAMMSwapAdapter.swap`).
@@ -353,36 +360,47 @@ creation block's header, a `delta_transition` per later block with the decoder's
 checks both components decode at every block and stay the same pool, compares every grid row at
 every pinned block at that block's own clock (preview words and revert classes on the port; on the
 `ProtocolSim` a quote, a typed refusal above the limit or the empty trade for a buy's dust below
-it, the limits at the recorded edges, the hook's spot, the lever
-venue's refusals: `LevPaused` while leverage is paused, from the creation through 51433698, and
-after the unpause at 51433699 `SpreadUnavailable` for every lever-up, the keeper never having
-re-posted a spread to the `LeverageSpreadHook`, so the constructor's spread aged past
-`maxSpreadAge` an hour after the creation, and `NothingToFill` / `PriceBand` for the lever-downs;
-a live spread would make the lever-up venue quotable, a state no fixture covers), quotes every
-settled swap from the parent block's state at the swap block's clock (the receipt's `amountOut`
-to the wei, the receipt's `feeWad`, the post-state's pool,
+it, the limits at the recorded edges, the hook's spot, and the lever venue row by row), quotes
+every settled swap from the parent block's state at the swap block's clock (the receipt's
+`amountOut` to the wei, the receipt's `feeWad`, the post-state's pool,
 hook, Router legs, position, borrow totals and IRM rate equal to the block's own diff) and runs the
 harness's step at both stop blocks (limits, spot, 0.1% / 1% / 10% quotes at the block after the
 stop block: nothing tradable at 51155010, both directions at 51302920).
+
+The lever venue row by row: `LevPaused` while leverage is paused, from the creation through
+51433698; after the unpause at 51433699 `SpreadUnavailable` for every lever-up, the keeper never
+having re-posted a spread to the `LeverageSpreadHook`, so the constructor's 17500 ppm post had
+aged past `maxSpreadAge = 3600 s` an hour after the creation; and from 51649706, where the
+curator cleared that window (`MaxSpreadAgeSet(0)`, so the same post no longer lapses), the
+venue's own quote: the recorded `(amountInUsed, amountOut, spreadPpm, crAfterWad)` to the word at
+every recorded size, and the recorded `lever_edge` and its output as the venue's `get_limits`. A
+lever-down refuses on its own checks throughout (`NothingToFill` / `PriceBand`). The replay also
+asserts the date itself — no lever-up fills at any pinned block below 51649706, and one does at
+every pinned block at or above it.
 
 Generator: `gen/fetch.py` (the stages), `gen/morpho_events.py` (the other transactions' Morpho
 events) and `gen/pack.py` (the two fixtures, `gzip` mtime 0 of `json.dumps(sort_keys=True,
 separators=(",", ":"))`), over `https://mainnet.base.org` (the withdrawal, recenter and unpause
 stages were added on 2026-09-17, the stages after an insertion re-fetched so their catch-up diffs
-start at the new stage); the stream fixture by the package test above (`gen/regen.sh` runs both).
+start at the new stage; the two spread stages were appended on 2026-09-23, which invalidates no
+catch-up diff since nothing follows them); the stream fixture by the package test above
+(`gen/regen.sh` runs both).
 `gen/README.md` lists every script and its digest.
 
 | file | sha256 (stored) | sha256 (uncompressed) |
 | --- | --- | --- |
-| `snapshots/e2e_stream.json.gz` | `06b482655e2b24d600494d617999cf84c50ec2682e4661d7ee97ea8bfe2f43e0` | `31e9b1e97e845cf67e6667285cc101b09842f26caba7e6269f52b377852a1374` |
-| `snapshots/e2e_grids.json.gz` | `e6636e338627c8569d606b29da6a3b901c1b104057a5b790e87b66aa6c61d0c3` | `66e953f3496a92bba5cd2d2ed39dc6287fbb7c6104e7e57481419789d52739d1` |
+| `snapshots/e2e_stream.json.gz` | `05dfc64de3d8360585f3f59fb1e7450ad3ad27605489ff8b11396a23e4caea6e` | `d4c45848a7c39de278af8a42b902690b5b4d3f5ce843e1532654d772b71d7d6f` |
+| `snapshots/e2e_grids.json.gz` | `6eb61a17ae741a6416985cf2c2f3e32e0126b2e481a3022554d7ea90c3e731e5` | `58b34c9cb60c1f16e4577996cb6abe3e34dfff73393021451b8aac614583532a` |
 
-Coverage: 42 stream blocks (the 27 stage blocks, 23 with a transaction of interest and 4 catch-up
-stops, and the 15 synthetic catch-up blocks before stages), 143 attribute rows in the creation
-snapshot, 2142 `previewSwap` rows at the eleven pinned blocks (1194 full fills, 0 clipped, 948
-reverts, the pool refusing above its largest full fill rather than clipping at these states), 20
-edges (both directions at the ten unpaused pinned blocks), 83 `previewLever` rows (`LevPaused`
-at the first ten, `SpreadUnavailable` / `NothingToFill` / `PriceBand` at 51433699), 6 settled
-swaps and 2 deposits. The other transactions' Morpho events at the swap blocks: a withdrawal at 51302916
+Coverage: 45 stream blocks (the 29 stage blocks, 24 with a transaction of interest and 5 catch-up
+stops, and the 16 synthetic catch-up blocks before stages), 143 attribute rows in the creation
+snapshot, 2610 `previewSwap` rows at the thirteen pinned blocks (1486 full fills, 0 clipped, 1124
+reverts, the pool refusing above its largest full fill rather than clipping at these states), 24
+swap edges (both directions at the twelve unpaused pinned blocks), 189 `previewLever` rows (114
+refusals: `LevPaused` at the ten pinned blocks below the unpause and `SpreadUnavailable` /
+`NothingToFill` / `PriceBand` at 51433699; 75 full fills at 51649706 and 51670000, where the
+spread's age is cleared and the venue quotes) and the 2 lever-up edges those two blocks carry
+(4850667 sats -> 3887286624 USDC base units and 4910491 -> 3957263752), 6 settled swaps and 2
+deposits. The other transactions' Morpho events at the swap blocks: a withdrawal at 51302916
 (90,140,614), a supply at 51343234, a borrow and a supply at 51347390, two supplies at 51420672,
 none at 51420867 and 51430828.
