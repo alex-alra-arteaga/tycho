@@ -1257,7 +1257,7 @@ fn rate_ceiling_verdict_moves_the_flag() {
     let rate = |delta: U256| {
         venue
             .morpho
-            .borrow_rate_after(delta, U256::ZERO, t0)
+            .try_borrow_rate(delta, U256::ZERO, t0)
             .unwrap()
     };
     let (ok_low, at_zero) = rate(U256::ZERO);

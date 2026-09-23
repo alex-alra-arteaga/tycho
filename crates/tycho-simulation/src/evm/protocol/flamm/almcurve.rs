@@ -23,7 +23,7 @@ use alloy::primitives::U256;
 
 use super::{
     error::FlammError,
-    math::{mul_div, mul_div_up, sat_sub, sqrt, Q96, WAD, WAD_SQUARED},
+    math::{mul_div, mul_div_up, sqrt, Q96, WAD, WAD_SQUARED},
 };
 
 /// `AlmCurve.MIN_X_WAD` (`AlmCurve.sol:24`).
@@ -189,7 +189,7 @@ pub fn held_at(sup: &Support, x_wad: U256) -> Result<(U256, U256), FlammError> {
         .checked_sub(sup.x_lo)
         .ok_or(FlammError::PanicArithmetic)?;
     let y = y_at_x(x, sup.a_wad)?;
-    Ok((volatile_wad, sat_sub(y, sup.y_hi)))
+    Ok((volatile_wad, y.saturating_sub(sup.y_hi)))
 }
 
 /// `AlmCurve.reservesAt` (`AlmCurve.sol:311-320`): token reserves at `x_wad` for anchor and scale,
@@ -235,12 +235,12 @@ pub fn swap_exact_in(
     if !volatile_in {
         return stable_in(sup, x_wad, y, amount_in_wad);
     }
-    let room = sat_sub(sup.x_hi, x_wad);
+    let room = sup.x_hi.saturating_sub(x_wad);
     let used = if amount_in_wad > room { room } else { amount_in_wad };
     let input_unused = amount_in_wad - used;
     let x_after = x_wad + used;
     let y_after = y_at_x(x_after, sup.a_wad)?;
-    Ok(NormalizedFill { amount_out: sat_sub(y, y_after), x_after, input_unused })
+    Ok(NormalizedFill { amount_out: y.saturating_sub(y_after), x_after, input_unused })
 }
 
 /// `AlmCurve._stableIn` (`AlmCurve.sol:225-252`): paying the stable leg raises `y` and lowers `x`;
@@ -256,7 +256,7 @@ fn stable_in(
     amount_in_wad: U256,
 ) -> Result<NormalizedFill, FlammError> {
     let y_max = y_at_x(sup.x_lo, sup.a_wad)?;
-    let reachable = sat_sub(y_max, y);
+    let reachable = y_max.saturating_sub(y);
     let used = if amount_in_wad > reachable { reachable } else { amount_in_wad };
     let input_unused = amount_in_wad - used;
     if used.is_zero() {
@@ -282,7 +282,7 @@ fn stable_in(
         }
     }
     let x_after = hi;
-    Ok(NormalizedFill { amount_out: sat_sub(x_wad, x_after), x_after, input_unused })
+    Ok(NormalizedFill { amount_out: x_wad.saturating_sub(x_after), x_after, input_unused })
 }
 
 /// `AlmCurve._seedBracket` (`AlmCurve.sol:269-284`): narrow `[lo, hi]` around `yAtX(yTarget)`,
@@ -401,7 +401,7 @@ pub fn swap_exact_in_x96(
     Ok(TokenFill {
         amount_out,
         x_after: fill.x_after,
-        amount_in_unspent: sat_sub(amount_in, used_tok),
+        amount_in_unspent: amount_in.saturating_sub(used_tok),
     })
 }
 

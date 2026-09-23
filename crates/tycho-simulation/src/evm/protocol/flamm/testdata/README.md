@@ -273,8 +273,8 @@ Blocks: 51302915 (the parent of the pool's first settled swap, timestamp 1789395
 (1789415347) and 51409000 (1789607347). `snapshots/swap_51302916_delta.json.gz` is block 51302916,
 the swap itself (tx `0x46c3cd72a5860b2fe546e5a2130e066314e3777027151661e1e4f19a935901fa`, 15000
 sats → 11301759 USDC): the header and the 12 tracked words the block changed (`eth_getStorageAt`
-at 51302915 vs 51302916), named as the substreams names the attributes, copied from
-`protocols/substreams/base-flamm/testdata/swap_51302916.json`. The block also carried another
+at 51302915 vs 51302916), named as the substreams names the attributes, the same writes the base-flamm stage for 51302916
+carries (`protocols/substreams/base-flamm/testdata/e2e_blocks.json.gz`). The block also carried another
 Morpho user's withdrawal from the market (its supply totals end 90,140,614 assets below what the
 pool's own transaction leaves), which the test accounts for.
 
