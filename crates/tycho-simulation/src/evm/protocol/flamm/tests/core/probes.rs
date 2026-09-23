@@ -268,7 +268,7 @@ fn feed_token(answer: u64, at: u64, peg_band: u64) -> FeedToken {
 /// live spread of 17500, a leverage role, `lastLeverSpreadPpm` zero.
 fn state(loans: usize) -> State {
     let tokens = [USDC, USDT];
-    let mut s = State {
+    State {
         block: 1,
         timestamp: NOW,
         pool_asset: CBBTC,
@@ -292,7 +292,6 @@ fn state(loans: usize) -> State {
         share_supply: w(1),
         last_lever_spread_ppm: U256::ZERO,
         hooks: PoolHooks {
-            addrs: [Address::ZERO; 7],
             swap: SwapHookSlot { kind: HookKind::EverlongSwapV1, everlong_swap: Some(FlatHook) },
             leverage: LeverageHookSlot {
                 kind: HookKind::EverlongLeverageV1,
@@ -317,9 +316,7 @@ fn state(loans: usize) -> State {
                 .map(|_| feed_token(1, NOW - 60, 10_000_000_000_000_000))
                 .collect(),
         },
-    };
-    s.hooks.addrs[0] = Address::repeat_byte(1);
-    s
+    }
 }
 
 /// `FLAMMLeverLib._execute` (`:182`): only a live spread is stored. Before the venue has ever

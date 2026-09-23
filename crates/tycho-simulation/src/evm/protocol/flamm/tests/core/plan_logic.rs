@@ -196,7 +196,7 @@ fn state(physical: u64, liquid: u64) -> State {
         started_at: w(NOW - 60),
         updated_at: w(NOW - 60),
     };
-    let mut s = State {
+    State {
         block: 1,
         timestamp: NOW,
         pool_asset: CBBTC,
@@ -225,7 +225,6 @@ fn state(physical: u64, liquid: u64) -> State {
         share_supply: w(1_000_000),
         last_lever_spread_ppm: w(0),
         hooks: PoolHooks {
-            addrs: [Address::ZERO; 7],
             swap: SwapHookSlot {
                 kind: HookKind::EverlongSwapV1,
                 everlong_swap: Some(ScriptedHook {
@@ -284,9 +283,7 @@ fn state(physical: u64, liquid: u64) -> State {
                 round: round(1),
             }],
         },
-    };
-    s.hooks.addrs[0] = Address::repeat_byte(1);
-    s
+    }
 }
 
 fn hook(s: &mut State) -> &mut ScriptedHook {

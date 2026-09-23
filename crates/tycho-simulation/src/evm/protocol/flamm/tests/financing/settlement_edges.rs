@@ -529,24 +529,20 @@ fn morpho_market_edges() {
                 .map(|x| vec![x]),
             14 => Ok(vec![v.free_liquidity()]),
             15 => v
-                .borrow_rate_after(r.a.0, r.b.0, now)
+                .try_borrow_rate(r.a.0, r.b.0, now)
                 .map(|(ok, x)| vec![bool_word(ok), x]),
             16 => Ok(vec![bool_word(v.oracle_ok), v.oracle_price]),
             20 => v
-                .account_supply_collateral(r.a.0)
+                .supply_collateral(r.a.0)
                 .map(|_| vec![]),
             21 => v
-                .account_withdraw_collateral(r.a.0, now)
+                .withdraw_collateral(r.a.0, now)
                 .map(|_| vec![]),
-            22 => v
-                .account_borrow(r.a.0, now)
-                .map(|_| vec![]),
+            22 => v.borrow(r.a.0, now).map(|_| vec![]),
             23 => v
                 .account_repay(r.a.0, now)
                 .map(|x| vec![x]),
-            24 => v
-                .account_supply(r.a.0, now)
-                .map(|x| vec![x]),
+            24 => v.supply(r.a.0, now).map(|x| vec![x]),
             25 => v
                 .account_withdraw(r.a.0, r.b.0, now)
                 .map(|(x, y)| vec![x, y]),

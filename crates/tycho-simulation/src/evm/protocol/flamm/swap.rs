@@ -16,7 +16,7 @@ use super::{
     error::FlammError,
     gate::{self, Pool},
     hook,
-    math::{checked_add, checked_mul, div, div_ceil, min_u, mul_div, mul_div_up, sat_sub, WAD},
+    math::{checked_add, checked_div, checked_mul, div_ceil, mul_div, mul_div_up, WAD},
     state::{priced, FlammState, FEATURE_SWAP_BUY, FEATURE_SWAP_SELL},
 };
 
@@ -79,7 +79,7 @@ pub fn to_n18(native: U256, scale: U256, q: U256) -> Result<U256, FlammError> {
 /// floored twice.
 pub fn from_n18_floor(v: U256, scale: U256, q: U256) -> Result<U256, FlammError> {
     let x = mul_div(v, WAD, q)?;
-    div(x, scale)
+    checked_div(x, scale)
 }
 
 /// `FLAMMSwapLib.fromN18Ceil` (`FLAMMSwapLib.sol:49`): `ceilDiv(mulDiv(v, WAD, q, Up), scale)`, a
@@ -247,7 +247,7 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
             p.passes += 1;
             let funding = self.swap_funding(b, idx, collateral_in, p.price_wad, now)?;
             let funding = checked_add(liquid, funding)?;
-            p.ceiling = min_u(room, funding); // `room < funding ? room : funding`
+            p.ceiling = room.min(funding); // `room < funding ? room : funding`
             if p.ceiling.is_zero() {
                 return Err(FlammError::RoomExhausted);
             }
@@ -256,7 +256,7 @@ impl<H: SwapHook, L: LeverageHook, R: Router> FlammState<H, L, R> {
                 return Ok(p);
             }
             collateral_in = p.used_native;
-            let need = sat_sub(p.net_native, liquid);
+            let need = p.net_native.saturating_sub(liquid);
             let funding = self.swap_funding(b, idx, collateral_in, p.price_wad, now)?;
             if need <= funding {
                 return Ok(p);
