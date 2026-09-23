@@ -56,11 +56,6 @@ fn gunzip(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-fn blocks_fixture() -> Value {
-    serde_json::from_slice(&gunzip(include_bytes!("../testdata/e2e_blocks.json.gz")))
-        .expect("e2e_blocks.json")
-}
-
 /// The stream fixture the simulation replays, committed beside the ProtocolSim's other fixtures.
 fn committed_stream() -> Value {
     serde_json::from_slice(&gunzip(include_bytes!(
@@ -530,7 +525,7 @@ struct Replayed {
 /// Feeds every stage to the indexer, checking the storage rule and the feed rows after every
 /// block, and returns the indexer with the stream and the stages in order.
 fn replay() -> (Indexer, Vec<Replayed>) {
-    let fx = blocks_fixture();
+    let fx = testdata::e2e_blocks();
     let cfg = config();
     let seed = word_map(&fx["seed"]);
     // The universe at initialBlock - 1 is the manifest's `words`: every seeded word has the

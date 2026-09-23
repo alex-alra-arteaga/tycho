@@ -8,7 +8,6 @@
 //! row the indexer holds, and the rows of a feed are its state derived from the words store.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use serde_json::Value;
 use substreams_ethereum::pb::eth::v2::{Log, StorageChange};
 use tycho_substreams::prelude::{BlockChanges, BlockTransactionProtocolComponents, ChangeType};
 
@@ -74,11 +73,6 @@ fn attrs_of(
         .unwrap_or_default()
 }
 
-fn activation_fixture() -> Value {
-    serde_json::from_str(include_str!("../testdata/verify_activation_51298416.json"))
-        .expect("fixture json")
-}
-
 /// The curator's activation (block 51298416, tx 0x4af4828c…eafd, index 75): real before/after
 /// `eth_getStorageAt` over every tracked word (plus the proxies' rotation/access words and the
 /// aggregators' hot words) shows exactly two pool words moved: the pause byte of `FLAMM_NS+10`
@@ -86,7 +80,7 @@ fn activation_fixture() -> Value {
 /// `pool:<slot>` updates on both components and emit no balance change (no inventory word moved).
 #[test]
 fn verify_activation_block_51298416_forwards_exactly_the_two_pool_words() {
-    let f = activation_fixture();
+    let f = fixture("activation");
     let cfg = config();
     let pool = live_pool();
     let block = testdata::fixture_block(&f, vec![]);
@@ -214,7 +208,7 @@ fn verify_no_state_is_emitted_for_a_pool_before_its_creation_tx() {
         })
         .collect();
     let deployment = |a: &Address| deployments.get(a).copied();
-    let before = words_map(&creation["words_before"]);
+    let before = words_map(&creation["store_before"]);
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
     let mut block = testdata::fixture_block(&creation, vec![]);
     let creation_index = block.transaction_traces[0].index;
@@ -787,7 +781,7 @@ fn verify_creation_snapshot_extras_versus_schema() {
         })
         .collect();
     let deployment = |a: &Address| deployments.get(a).copied();
-    let before = words_map(&creation["words_before"]);
+    let before = words_map(&creation["store_before"]);
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
     let block = testdata::fixture_block(&creation, vec![]);
     let components = components_in_block(&block, &cfg, &deployment, first_word);
@@ -870,7 +864,7 @@ fn creation_attribute_names() -> std::collections::BTreeSet<String> {
         })
         .collect();
     let deployment = |a: &Address| deployments.get(a).copied();
-    let before = words_map(&creation["words_before"]);
+    let before = words_map(&creation["store_before"]);
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
     let block = testdata::fixture_block(&creation, vec![]);
     let components = components_in_block(&block, &cfg, &deployment, first_word);
@@ -1059,7 +1053,7 @@ impl Chain {
             .collect();
         let deployment = |a: &Address| deployments.get(a).copied();
         let mut store = words_map(&fixture("seeds")["words"]);
-        store.extend(words_map(&creation["words_before"]));
+        store.extend(words_map(&creation["store_before"]));
         let first_word = |a: &Address, k: &Word| store.get(&(*a, *k)).copied();
         let block = testdata::fixture_block(&creation, vec![]);
         let components = components_in_block(&block, &cfg, &deployment, first_word);
