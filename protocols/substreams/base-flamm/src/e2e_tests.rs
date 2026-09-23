@@ -15,9 +15,11 @@
 //! 51420867, 51430828), two of its six deposits (51300667, 51426394), one of its four
 //! withdrawals (51348093), one of the keeper's recenters (51384803), the range test's second
 //! stop block (51302920), three recent blocks each carrying a Chainlink round (USDC/USD
-//! 51429815, cbBTC/USD 51433135, the Morpho oracle's `DualAggregator` 51433218) and the
-//! `LevPauseSet(false)` that unpaused leverage (51433699). Between two blocks of interest the
-//! net change of every tracked word is fed as one synthetic transaction at the block before the
+//! 51429815, cbBTC/USD 51433135, the Morpho oracle's `DualAggregator` 51433218), the
+//! `LevPauseSet(false)` that unpaused leverage (51433699), the `MaxSpreadAgeSet(0)` that cleared
+//! the spread's staleness window and so opened the lever-up venue (51649706) and a later block
+//! at which both venues quote (51670000). Between two blocks of interest the net change of every
+//! tracked word is fed as one synthetic transaction at the block before the
 //! next one of interest: the words store and the rows are functions of the words' values, so
 //! the fold after that transaction is the fold the real stream reaches after the same blocks.
 //! The other deposits (51343943, 51347236, 51347413, 51353593), withdrawals (51344221,
@@ -724,6 +726,12 @@ fn e2e_creation_matches_the_range_test_expectations() {
 /// curator Safe calling `FLAMM.setLevPaused(false)`.
 const LEV_UNPAUSE_BLOCK: u64 = 51_433_699;
 
+/// The `MaxSpreadAgeSet(0)` on the `LeverageSpreadHook` in this block, the curator Safe clearing
+/// `maxSpreadAge`: until it the constructor's 17500 ppm spread post had long aged out and every
+/// lever-up reverted `SpreadUnavailable`; from it the same post no longer lapses and the lever-up
+/// venue quotes. Both range tests stop far below this block.
+const SPREAD_AGE_CLEARED_BLOCK: u64 = 51_649_706;
+
 /// Every block after the creation: the words the block wrote reach both components as updates
 /// (a FLAMM-owned word, a Morpho word, a feed round), deletions only ever name held rows
 /// (checked in `replay`), and the pause bits follow the curator: paused until 51298416, lever
@@ -1112,9 +1120,10 @@ fn value_of(v: &str) -> String {
 /// paused through the first test's range (both skips true) and quotes in the second (simulation
 /// and execution on: the harness runs the quoted sizes through the `FLAMMExecutor` it holds under
 /// `flamm`); the lever-up venue is paused at both stop blocks (simulation off, and execution with
-/// it; leverage stays paused until 51433699, and after the unpause `previewLever` still refuses
-/// every size, `SpreadUnavailable`: the keeper has never posted a spread), and both tests span the
-/// creation block.
+/// it; leverage stays paused until 51433699, and through the unpause `previewLever` still refused
+/// every size, `SpreadUnavailable`, the keeper never having re-posted a spread -- until the
+/// curator cleared `maxSpreadAge` at 51649706, far past both stop blocks, from where the venue
+/// quotes), and both tests span the creation block.
 #[test]
 fn e2e_yaml_skip_flags_are_truthful() {
     let tests = expected_components_of_yaml();
@@ -1144,6 +1153,7 @@ fn e2e_yaml_skip_flags_are_truthful() {
             .iter()
             .any(|r| r["ok"].as_bool() == Some(true));
         assert!(test.stop_block < LEV_UNPAUSE_BLOCK);
+        assert!(test.stop_block < SPREAD_AGE_CLEARED_BLOCK);
         for c in &test.expected {
             assert_eq!(
                 c.skip_execution, c.skip_simulation,

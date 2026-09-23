@@ -587,8 +587,10 @@ fn query_pool_swap_answers_both_directions() {
     }
 }
 
-/// The lever-up venue at the pinned blocks: `levPaused` on chain, so every `previewLever`
-/// reverts and the venue quotes nothing; the reverse direction is not a venue at all.
+/// The lever-up venue at the three snapshot blocks of section 5, all of them below the unpause
+/// at 51433699: `levPaused` on chain, so every `previewLever` reverts and the venue quotes
+/// nothing; the reverse direction is not a venue at all. (The venue opens much later, at
+/// 51649706; `tests/e2e.rs` pins it quoting there.)
 #[test]
 fn lever_up_venue_refuses_as_the_chain_does() {
     let (cb, us) = (cbbtc(), usdc());
@@ -633,10 +635,11 @@ fn lever_up_venue_refuses_as_the_chain_does() {
         );
         assert!(state.spot_price(&us, &cb).is_err());
         assert!(state.spot_price(&cb, &us).is_err());
-        // The keeper's spread post (17500 ppm at 1789099323, maxSpreadAge 3600) has lapsed at
-        // every pinned block, and the venue is `levPaused` on top of that: two independent
-        // reasons for `fee()` to answer 1.0. Re-posting the spread at the clock lifts the first
-        // and not the second, so the fee stays 1.0 while the spread the port reads becomes live.
+        // The constructor's spread post (17500 ppm at 1789099323, maxSpreadAge 3600; no `SpreadSet`
+        // has ever been emitted) has lapsed at each of these three blocks, and the venue is
+        // `levPaused` on top of that: two independent reasons for `fee()` to answer 1.0.
+        // Re-posting the spread at the clock lifts the first and not the second, so the fee
+        // stays 1.0 while the spread the port reads becomes live.
         assert_eq!(flamm.hooks.spread.spread_ppm(now), Ok((false, U256::ZERO)));
         assert_eq!(state.fee(), 1.0);
         assert_eq!(flamm.lever_open(true, now), Err(FlammError::LevPaused));
