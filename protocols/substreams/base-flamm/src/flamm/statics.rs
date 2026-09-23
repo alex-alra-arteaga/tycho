@@ -59,12 +59,6 @@ pub fn creation(
     view: &WordView<'_>,
     tx_index: u64,
 ) -> Result<Creation> {
-    if !config.hook_allowed(&event.invariant_codehash) {
-        bail!(
-            "invariant hook codehash {} is not allowlisted",
-            keys::hex_word(&event.invariant_codehash)
-        );
-    }
     if event.invariant_hook != call.hooks.invariant_hook {
         bail!("PoolCreated.invariantHook differs from the createPool calldata");
     }
@@ -130,6 +124,10 @@ pub fn creation(
     }
 
     let implementation_codehash = codehash(&event.implementation, Role::Implementation)?;
+    // The invariant-hook allowlist: the hook must have been created in the indexed range with a
+    // code the manifest registers under `hook`, and the factory's own read of it
+    // (`PoolCreated.invariantCodehash` = `hooks.invariantHook.codehash`, FLAMMFactory.sol:264)
+    // must be that code. A pool on any other hook code is refused here.
     let hook_codehash = codehash(&hook, Role::Hook)?;
     if hook_codehash != event.invariant_codehash {
         bail!("hook code at creation differs from PoolCreated.invariantCodehash");
@@ -274,8 +272,8 @@ pub fn creation(
 /// The external words a pool's quotes read that the stream cannot discover on its own, and that
 /// the manifest must therefore track: each venue's Morpho market and position words and IRM rate
 /// (`words` seeds), each feed proxy's rotation and access-controller words (`words` seeds), and
-/// the aggregator currently behind each proxy (its layout kind in `aggregators`, every write of it
-/// tracked through `addresses`). `store_words` keeps nothing else outside the registered
+/// the aggregator currently behind each proxy (its layout kind in `aggregators`, which is also
+/// what tracks every write of it). `store_words` keeps nothing else outside the registered
 /// contracts, so a pool with an untracked word would have it valued as unknown in every block
 /// after its creation: the balances would miss the venue, and a feed behind an unlisted
 /// aggregator would carry `aggregator` / `phase` only and never quote. Such a pool is refused
@@ -328,7 +326,7 @@ pub fn untracked_external_words(
             .at(&feed.proxy, &keys::slot(keys::PROXY_PHASE_SLOT), tx_index)
             .map(|w| feeds::phase_and_aggregator(&w).1);
         if let Some(a) = aggregator {
-            if !(config.aggregators.contains_key(&a) && config.tracks_address(&a)) {
+            if !config.aggregators.contains_key(&a) {
                 out.push(format!("feed:{}:kind ({})", feed.role, hex_address(&a)));
             }
         }
