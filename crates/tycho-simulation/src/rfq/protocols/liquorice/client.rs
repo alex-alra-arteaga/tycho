@@ -104,7 +104,10 @@ impl LiquoriceClient {
 
     /// Applies whichever auth scheme is currently active to the request.
     fn apply_auth(&self, request: RequestBuilder) -> RequestBuilder {
-        if self.use_legacy_auth.load(Ordering::Relaxed) {
+        if self
+            .use_legacy_auth
+            .load(Ordering::Relaxed)
+        {
             request
                 .header("solver", &self.auth_solver)
                 .header("authorization", &self.auth_key)
@@ -121,8 +124,10 @@ impl LiquoriceClient {
         build: impl Fn() -> RequestBuilder,
     ) -> Result<Response, reqwest::Error> {
         let response = self.apply_auth(build()).send().await?;
-        if response.status() == StatusCode::UNAUTHORIZED
-            && !self.use_legacy_auth.swap(true, Ordering::Relaxed)
+        if response.status() == StatusCode::UNAUTHORIZED &&
+            !self
+                .use_legacy_auth
+                .swap(true, Ordering::Relaxed)
         {
             warn!("Liquorice Basic auth rejected (401); retrying with legacy solver/authorization headers");
             return self.apply_auth(build()).send().await;
