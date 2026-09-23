@@ -25,14 +25,17 @@ use crate::{
 
 fn manifest_params() -> String {
     let manifest = include_str!("../base-flamm.yaml");
-    let start = manifest
-        .find("&params \"")
-        .expect("params anchor") +
-        "&params \"".len();
-    let end = manifest[start..]
-        .find('"')
-        .expect("closing quote");
-    manifest[start..start + end].to_string()
+    let block = manifest
+        .split_once("&params >-\n")
+        .expect("params anchor")
+        .1;
+    // The folded scalar as YAML folds it: every line of the block, joined by one space.
+    block
+        .lines()
+        .take_while(|l| l.starts_with("    "))
+        .map(|l| &l[4..])
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn config() -> Config {
@@ -1336,7 +1339,6 @@ fn verify_dual_feed_rows_follow_the_words_through_rotations_and_rounds() {
     let fresh = [0x77u8; 20];
     cfg.aggregators
         .insert(fresh, FeedKind::Dual);
-    cfg.addresses.push(fresh);
     let mut chain = Chain::new(cfg);
     let (_, agg) = chain.feed("mo0");
     let (latest, secondary) = feeds::dual_hotvars(&word_of(&chain, &agg, &keys::slot(13)));

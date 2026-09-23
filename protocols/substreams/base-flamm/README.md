@@ -43,13 +43,14 @@ map_protocol_changes (params, Block, map_components, store_pools, store_words)
   contracts are tracked from *before* the pool exists: hooks, price feed, router and factory are deployed ahead
   of `createPool` against the CREATE2-predicted pool address (`FLAMMFactory.predictPool`).
 * `store_words` records every storage write of a registered contract (a pool's own words filtered to its
-  namespace, its loans array and `_totalSupply`), of the manifest `addresses` (the aggregators, whose round words
-  have per-round keys) and of the seeded `words` keys. The maps read it as of the start of a block.
+  namespace, its loans array and `_totalSupply`), of the manifest `aggregators` (whose round words have
+  per-round keys) and of the seeded `words` keys. The maps read it as of the start of a block.
 * `map_components` turns `FLAMMFactory.PoolCreated` plus the `createPool` calldata into the two components. A
-  pool is refused, with the reason logged, unless its invariant hook's codehash is allowlisted, the manifest has
-  its immutables, every one of its contracts was created with registered code in the range (a contract that
-  was not has no tracked history, so the component would fail closed anyway), and the manifest tracks its
-  external words (see "Failure modes").
+  pool is refused, with the reason logged, unless the manifest has its immutables, every one of its contracts
+  was created with registered code in the range (a contract that was not has no tracked history, so the
+  component would fail closed anyway; for the invariant hook this is also the allowlist, its registered code
+  having to equal `PoolCreated.invariantCodehash`), and the manifest tracks its external words (see "Failure
+  modes").
 
   The two components are one pool's inventory reported twice — the same book, the same Morpho
   position, the same gate room — so a solution must use one or the other, never both. Each venue's
@@ -144,10 +145,8 @@ the unit tests assert the manifest carries exactly the fixture values in `testda
 | key | value | verified by |
 |---|---|---|
 | `factory` | `0x1BfcE014774D0DD7e04bC595D46Fa09F7dCCF45f` | the `PoolCreated` log of the creation tx |
-| `hook_codehashes` | the `EverlongHook` runtime codehash | `eth_getCode(hook, 51154990)`, `PoolCreated.invariantCodehash` |
-| `deployments` | `role:codehash` for implementation, pool proxy, hook, leverage hook, spread hook, router, price feed, factory, account | `eth_getCode` at 51154990 == the deployment record |
-| `aggregators` | `0x51ce…:ocr2`, `0x68be…:ocr2`, `0x606c…:uptime`, `0xe5ec…:dual` | the aggregators' verified sources (schema 2.6) |
-| `addresses` | the four aggregators | every storage write tracked (round words have per-round keys); every `aggregators` entry must be listed, the params are refused otherwise |
+| `deployments` | `role:codehash` for implementation, pool proxy, hook, leverage hook, spread hook, router, price feed, factory, account | `eth_getCode` at 51154990 == the deployment record; the `hook` entries are the invariant-hook allowlist, checked against `PoolCreated.invariantCodehash` |
+| `aggregators` | `0x51ce…:ocr2`, `0x68be…:ocr2`, `0x606c…:uptime`, `0xe5ec…:dual` | the aggregators' verified sources (schema 2.6); listing one is also what tracks its every storage write, its round words having per-round keys |
 | `words` | 48 `address:slot:value` seeds at `initialBlock - 1 = 51154965`: Morpho market and position words, the IRM rate, each proxy's slots 2 and 5, the guarded aggregators' `checkEnabled` / `s_accessList[proxy]`, the OCR2 `HotVars` and latest transmission, the uptime feed's `s_feedState`, the `DualAggregator`'s `HotVars`, cutoff and 21-round ring | `eth_getStorageAt` at 51154965, each cross-checked with its view (`aggregator()`, `phaseId()`, `accessController()`, `checkEnabled()`, `hasAccess(proxy, "")`, `latestRoundData()`, `getRoundData(r)`, `Morpho.market(id)`, `rateAtTarget(id)`) in `testdata/seeds_51154965.json` |
 | `immutables` | per pool, `name=value;…` for the 13 immutables listed above | ten of them the getters' answers in `testdata/immutables_51154990.json`, one (`irm_codehash`) `eth_getCode` at 51154990, and two, the `DualAggregator`'s `i_secondaryProxy` and `i_maxSyncIterations`, the operands its runtime code pushes where it uses them (`internal immutable`, so there is no getter to call; `testdata/README.md` records the walk) |
 
@@ -157,11 +156,11 @@ PropellerHeads to review.
 A further pool needs a package update carrying its `immutables` entry and, unless it shares them with the live
 pool, its external words: the Morpho market and position words and the IRM rate of each venue and the slots 2
 and 5 of each feed proxy in `words` (valued at 51154965, zero when the market or account did not exist yet), and
-each proxy's aggregator in `aggregators` and `addresses`. `store_words` keeps nothing else outside the
+each proxy's aggregator in `aggregators`. `store_words` keeps nothing else outside the
 registered contracts, so `map_components` refuses a pool whose external words the manifest does not track
 (`statics::untracked_external_words`, the missing names logged).
 
-A package update that changes `aggregators`, `addresses` or `words` (listing the aggregator a proxy rotated to,
+A package update that changes `aggregators` or `words` (listing the aggregator a proxy rotated to,
 seeding a further pool's words) changes what the attributes are a function of: the protocol is then re-indexed
 from `initialBlock` with cleared state, not resumed from the cursor. Rows written by the previous package are
 not the new package's `feed_state` of the words, so a resumed extractor would keep a feed's `kind` and rounds

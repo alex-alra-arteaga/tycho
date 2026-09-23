@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Everlong Labs Limited
 //! `FLAMMFactory.PoolCreated` → the pool's swap and lever-up components.
 //!
-//! Both components are emitted only when the invariant hook's runtime codehash is allowlisted, the
-//! manifest carries the pool's immutables, and every contract of the pool was created with
-//! registered code inside the indexed range (so its storage has been tracked since creation).
+//! Both components are emitted only when the manifest carries the pool's immutables and every
+//! contract of the pool, the invariant hook included, was created with registered code inside the
+//! indexed range (so its storage has been tracked since creation, and the hook's code is one the
+//! manifest names).
 //! Anything else is logged and skipped.
 use std::collections::HashMap;
 

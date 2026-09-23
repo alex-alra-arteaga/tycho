@@ -29,17 +29,21 @@ use crate::{
     testdata::{self, address, fixture, hex_bytes, hex_u64, synthetic_ring, word, words_map},
 };
 
-/// The params string of `base-flamm.yaml` (the `&params` anchor).
+/// The params string of `base-flamm.yaml`: the `&params` folded block scalar, folded the way
+/// YAML folds it.
 fn manifest_params() -> String {
     let manifest = include_str!("../base-flamm.yaml");
-    let start = manifest
-        .find("&params \"")
-        .expect("params anchor") +
-        "&params \"".len();
-    let end = manifest[start..]
-        .find('"')
-        .expect("closing quote");
-    manifest[start..start + end].to_string()
+    let block = manifest
+        .split_once("&params >-\n")
+        .expect("params anchor")
+        .1;
+    // The folded scalar as YAML folds it: every line of the block, joined by one space.
+    block
+        .lines()
+        .take_while(|l| l.starts_with("    "))
+        .map(|l| &l[4..])
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn config() -> Config {
@@ -172,14 +176,6 @@ fn manifest_params_are_the_fixture_values() {
     expect(Role::Factory, "0x1bfce014774d0dd7e04bc595d46fa09f7dccf45f");
     expect(Role::Account, "0x6760e3b032ee2d670cb684d9076b8f48cb066c48");
     assert_eq!(cfg.deployments.len(), 9);
-    assert!(cfg.hook_allowed(
-        &parse_word(
-            codehashes["0x65cbd227cbc61248ae77a5fc813a29c54c092134"]
-                .as_str()
-                .unwrap()
-        )
-        .unwrap()
-    ));
     // Immutables: the getters' answers (testdata/immutables_51154990.json), addresses as 20 bytes.
     let views = fixture("immutables");
     let pool = parse_address("0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572").unwrap();
@@ -214,7 +210,6 @@ fn manifest_params_are_the_fixture_values() {
         assert!(pinned.contains_key(name), "{name}");
     }
     assert_eq!(cfg.aggregators.len(), 4);
-    assert_eq!(cfg.addresses.len(), 4);
 }
 
 #[test]
@@ -587,7 +582,7 @@ fn creation_block_emits_both_components_with_the_snapshot_statics() {
 }
 
 #[test]
-fn creation_is_refused_without_allowlist_registry_or_immutables() {
+fn creation_is_refused_without_the_registry_or_immutables() {
     let creation = fixture("creation");
     let block = testdata::fixture_block(&creation, vec![]);
     let before = words_map(&creation["store_before"]);
@@ -599,10 +594,19 @@ fn creation_is_refused_without_allowlist_registry_or_immutables() {
             .tx_components
             .len()
     };
-    let mut cfg = config();
+    let cfg = config();
     assert_eq!(count(&cfg, &deployment), 1);
-    cfg.hook_codehashes.clear();
-    assert_eq!(count(&cfg, &deployment), 0, "hook not allowlisted");
+    let hook = parse_address("0x65cbd227cbc61248ae77a5fc813a29c54c092134").unwrap();
+    let without_hook = |a: &Address| if *a == hook { None } else { deployments.get(a).copied() };
+    assert_eq!(count(&cfg, &without_hook), 0, "hook code not registered");
+    // and a hook created with a code the manifest registers under another role is refused too.
+    let as_router = |a: &Address| {
+        deployments
+            .get(a)
+            .copied()
+            .map(|(r, h)| if *a == hook { (Role::Router, h) } else { (r, h) })
+    };
+    assert_eq!(count(&cfg, &as_router), 0, "hook code registered as a router");
     let mut cfg = config();
     cfg.immutables.clear();
     assert_eq!(count(&cfg, &deployment), 0, "no immutables entry");
@@ -632,12 +636,12 @@ fn creation_is_refused_without_allowlist_registry_or_immutables() {
     assert_eq!(count(&cfg, &deployment), 0, "sequencer proxy access controller not seeded");
     let mo0_aggregator = parse_address("0xe5ec87a39445b8d5b751b116802a53c5ae7e9df1").unwrap();
     let mut cfg = config();
-    cfg.addresses
-        .retain(|a| *a != mo0_aggregator);
-    assert_eq!(count(&cfg, &deployment), 0, "DualAggregator writes not tracked");
-    let mut cfg = config();
     cfg.aggregators.remove(&mo0_aggregator);
-    assert_eq!(count(&cfg, &deployment), 0, "DualAggregator layout unknown");
+    assert_eq!(
+        count(&cfg, &deployment),
+        0,
+        "DualAggregator layout unknown, so its writes are not tracked either"
+    );
     // and the reasons are named
     let view = crate::flamm::words::WordView::new(&[], first_word, &cfg.words);
     let untracked = statics::untracked_external_words(&pool, &cfg, &view, 0);

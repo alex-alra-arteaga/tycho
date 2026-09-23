@@ -2,9 +2,9 @@
 //! `word:<address>:<slot>` → the 32-byte value, for every tracked storage write.
 //!
 //! Tracked: every write of a contract the deployments store knows (a pool's own words filtered to
-//! its namespace), every write of the manifest `addresses` (the Chainlink aggregators, whose round
-//! words have per-round keys), and the seeded `words` keys (Morpho market and position, the IRM
-//! rate, the proxies' phase and access words, the aggregators' access words).
+//! its namespace), every write of a manifest `aggregators` entry (the Chainlink aggregators, whose
+//! round words have per-round keys), and the seeded `words` keys (Morpho market and position, the
+//! IRM rate, the proxies' phase and access words, the aggregators' access words).
 //! `map_protocol_changes` reads this store as of the start of a block to build the creation
 //! snapshot of a new pool and to value words a transaction did not touch.
 use std::collections::{HashMap, HashSet};
