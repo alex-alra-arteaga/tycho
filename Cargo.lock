@@ -9952,6 +9952,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "balancer-maths-rust",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "criterion",
