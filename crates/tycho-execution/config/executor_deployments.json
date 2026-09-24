@@ -270,6 +270,10 @@
     "rfq:metric": {
       "contract": "MetricExecutor",
       "args": []
+    },
+    "rfq:native": {
+      "contract": "NativeExecutor",
+      "args": ["0x4Df7557734B382EB542BEa6c74786D398DF4CC19"]
     }
   }
 }
