@@ -21,8 +21,10 @@ code of every contract deployed up to it, the words store the block opens on (`s
 since 51154965) and the chain's words at the parent block (`words_before`, the seed with those writes
 applied).
 
-The manifest params of `base-flamm.yaml` are generated from these files (codehashes, seeds, immutables) and the
-test `manifest_params_are_the_fixture_values` fails if they drift. `e2e_blocks.json.gz` was read on 2026-09-17
+The manifest params of `base-flamm.yaml` (codehashes, seeds, immutables) are derived from these files and
+pinned by the test `manifest_params_are_the_fixture_values`, which fails with the expected value when a fixture
+and the manifest disagree. There is no generator script: a fixture change is carried into the manifest by hand,
+using the value the failing assertion prints. `e2e_blocks.json.gz` was read on 2026-09-17
 (the pool's history up to block 51433699) and extended on 2026-09-23 with the two stages around the spread
 hook's `MaxSpreadAgeSet(0)` (51649706 and 51670000, appended, which invalidates no catch-up diff) by
 `fetch.py` (stages), `morpho_events.py` (the other transactions' Morpho events at the pool's transaction
