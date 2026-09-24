@@ -1,3 +1,13 @@
+## [0.424.0](https://github.com/propeller-heads/tycho/compare/0.423.0...0.424.0) (2026-09-24)
+
+
+### Features
+
+* **execution:** record the deployed Native RFQ executors ([54727d5](https://github.com/propeller-heads/tycho/commit/54727d512e27f3e544a685cae127065c190ab4d7))
+* **native:** Robinhood support, quote tokens, and deployed executors ([#1492](https://github.com/propeller-heads/tycho/issues/1492)) ([d80945b](https://github.com/propeller-heads/tycho/commit/d80945ba3bd740ff62ce2c1533e6ae7ccdbe0481))
+* **native:** support Robinhood Chain ([676a353](https://github.com/propeller-heads/tycho/commit/676a353b958d3301fe2a0f99395dece9ac630327))
+* **rfq:** add default quote tokens for Arbitrum, BSC and Robinhood ([4acace9](https://github.com/propeller-heads/tycho/commit/4acace9c8036f48f739212093552108cd16eb3b4))
+
 ## [0.423.0](https://github.com/propeller-heads/tycho/compare/0.422.1...0.423.0) (2026-09-23)
 
 
