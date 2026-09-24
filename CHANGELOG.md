@@ -1,3 +1,12 @@
+## [0.424.1](https://github.com/propeller-heads/tycho/compare/0.424.0...0.424.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **liquorice:** fall back to legacy solver/authorization headers on 401 ([15ac01d](https://github.com/propeller-heads/tycho/commit/15ac01dac2c5f198d3b41c3d3212ce7d9aa94504))
+* **liquorice:** use Basic auth header instead of separate solver/key headers ([7a82c35](https://github.com/propeller-heads/tycho/commit/7a82c3511919059b8dc7a1f019cc7213ec460d87))
+* **liquorice:** use Basic auth header instead of separate solver/key headers ([#1325](https://github.com/propeller-heads/tycho/issues/1325)) ([771ff44](https://github.com/propeller-heads/tycho/commit/771ff441360303b4da37ece81ec1fa38a744aa4b))
+
 ## [0.424.0](https://github.com/propeller-heads/tycho/compare/0.423.0...0.424.0) (2026-09-24)
 
 
