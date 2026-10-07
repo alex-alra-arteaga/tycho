@@ -48,7 +48,6 @@ use super::{
     morpho::VenueMarket,
     pricefeed::feed_read,
     router::Venue,
-    swap::SwapResult,
     words::{address_of, Attributes},
     Flamm,
 };
@@ -58,15 +57,13 @@ use crate::evm::protocol::{
 };
 
 /// Gas per venue and direction, the Go port's measured defaults (`constant.go`): the largest
-/// receipt gas of the adapter's fills on Base forks plus 25%, rounded up to 10,000. A swap sell
-/// grows with its input when the pool clips it: `_maxInForGrossCap` (`EverlongHook.sol:583`)
-/// bisects once per plan and once more in the execution, up to 64 curve solves each, and every
-/// funding pass after the first (`FLAMMSwapLib.sol:163`, at most four) re-runs the Router's
-/// `fundingCeiling`, the fee and the fill; the two slopes were measured over 645 mined clipped
-/// sells. A buy runs neither. Lever-down is not quoted.
+/// receipt gas of the adapter's fills on Base forks plus 25%, rounded up to 10,000. One constant
+/// each, because a quote is only ever a fill the pool takes whole: the work that would make a
+/// sell dearer than the constant — `_maxInForGrossCap`'s bisection (`EverlongHook.sol:583`) and
+/// every funding pass after the first (`FLAMMSwapLib.sol:163`) — runs only where the pool clips
+/// the input, and a clipped input is a partial fill, which `full_fill` refuses. A buy
+/// runs neither. Lever-down is not quoted.
 pub const GAS_SWAP_SELL: u64 = 1_360_000;
-pub const GAS_SWAP_SELL_CAP_EVAL: u64 = 10_300;
-pub const GAS_SWAP_SELL_PASS: u64 = 210_000;
 pub const GAS_SWAP_BUY: u64 = 1_510_000;
 pub const GAS_LEVER_UP: u64 = 3_670_000;
 
@@ -104,7 +101,6 @@ enum Direction {
 struct Fill {
     used: U256,
     out: U256,
-    gas: u64,
     post: Flamm,
 }
 
@@ -416,6 +412,30 @@ impl FlammPoolState {
     /// (not quarantined past the account's grace) with an oracle that answers. A donation to the
     /// venue account beyond what the Router manages is quoted as the Router prices it
     /// (recognized `= min(actual, managed)`), which the settlement fixtures replay exactly.
+    ///
+    /// The last two conditions are deliberately stricter than the chain, and the envelope is
+    /// where that strictness lives. The pool does not refuse either state: `MMRouterLib._slice`
+    /// (`MMRouterLib.sol:598-605`) returns `(0, 0)` for a venue that is unreadable or out of
+    /// band, and `bandOk` (`:780-788`) is what a non-answering market oracle makes false, so both
+    /// only zero that venue's funding while `_counted` (`:590-595`) marks a quarantined venue's
+    /// debt up at the flat allowance. A buy's ceiling is `physical + posted` and never consults
+    /// the venue at all (`FLAMMSwapLib.sol:151`), and a sell's is `min(room, liquid + funding)`
+    /// (`:159-166`), so a sell paid out of the tracked liquid still fills. The recorded grids
+    /// carry the proof: at the three core-edge blocks the `irm_dt_3601` scenario (its market
+    /// 3,601 seconds stale against a 3,600-second grace) and the `oracle_revert` / `oracle_zero`
+    /// scenarios answer 44 to 50 `previewSwap` rows and 44 to 48 `previewLever` rows apiece, and
+    /// the `irm_quarantine` scenario of every e2e grid answers 39 `previewSwap` rows; the port
+    /// reproduces all of them (`tests/core/e2e.rs`), so the refusals the envelope adds are its
+    /// own, not the core's.
+    ///
+    /// They are missed quotes, never wrong amounts, and the states themselves are ones a quote
+    /// would rather not price: a quarantined venue's debt is frozen at an allowance that is not a
+    /// bound on it (`MMRouterLib.sol:590-593`), and a dead market oracle leaves the settlement's
+    /// own health check unpriceable the moment there is debt on the book (Morpho's `_isHealthy`,
+    /// [`morpho`][crate::evm::protocol::flamm::morpho]). Dropping the loop would hand those
+    /// quotes back and leave the transaction itself to refuse what it must, as a
+    /// [`SimulationError::RecoverableError`] out of `state_driven`; that is a behaviour change
+    /// the integration's owner has to sign off, not a simplification, and it is open.
     fn quotable(&self) -> Result<&Flamm, SimulationError> {
         let core = match &self.core {
             Ok(c) => c,
@@ -499,7 +519,7 @@ impl FlammPoolState {
                 let (r, post) = flamm
                     .execute_swap(token_in, token_out, amount_in, U256::from(1u8), now, now)
                     .map_err(Refusal::Pool)?;
-                Ok(Fill { used: r.amount_in_used, out: r.amount_out, gas: swap_gas(&r), post })
+                Ok(Fill { used: r.amount_in_used, out: r.amount_out, post })
             }
             VenueKind::LeverUp => {
                 // `dir` is unread below, so a future caller that reached this venue with `Buy`
@@ -509,7 +529,7 @@ impl FlammPoolState {
                 let (r, post) = flamm
                     .execute_lever(true, amount_in, U256::from(1u8), now, now)
                     .map_err(Refusal::Pool)?;
-                Ok(Fill { used: r.amount_in_used, out: r.amount_out, gas: GAS_LEVER_UP, post })
+                Ok(Fill { used: r.amount_in_used, out: r.amount_out, post })
             }
         }
     }
@@ -673,21 +693,6 @@ impl FlammPoolState {
             scheduled: core.scheduled_at != 0 && now >= core.scheduled_at,
         })
     }
-}
-
-/// The gas of a settled swap (`pool_simulator.go` `gas`).
-fn swap_gas(r: &SwapResult) -> u64 {
-    if !r.pool_asset_in {
-        return GAS_SWAP_BUY;
-    }
-    let mut gas = GAS_SWAP_SELL.saturating_add(
-        r.cap_evals
-            .saturating_mul(GAS_SWAP_SELL_CAP_EVAL),
-    );
-    if r.passes > 1 {
-        gas = gas.saturating_add((r.passes - 1).saturating_mul(GAS_SWAP_SELL_PASS));
-    }
-    gas
 }
 
 fn token_address(t: &Token) -> Result<Address, SimulationError> {
@@ -873,7 +878,7 @@ impl ProtocolSim for FlammPoolState {
         if let Ok(core) = next.core.as_mut() {
             core.flamm = f.post;
         }
-        Ok(GetAmountOutResult::new(u256_to_biguint(f.out), BigUint::from(f.gas), Box::new(next)))
+        Ok(GetAmountOutResult::new(u256_to_biguint(f.out), BigUint::from(gas), Box::new(next)))
     }
 
     /// A size of `sell_token` the venue fills in full, and its output (`Self::limit`).
@@ -1030,20 +1035,5 @@ impl ProtocolSim for FlammPoolState {
         self.refresh_oracle();
         let after = self.clock_signature(timestamp);
         before != after
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn swap_gas_grows_with_solves_and_passes() {
-        let r = SwapResult { pool_asset_in: true, cap_evals: 3, passes: 1, ..Default::default() };
-        assert_eq!(swap_gas(&r), GAS_SWAP_SELL + 3 * GAS_SWAP_SELL_CAP_EVAL);
-        let r = SwapResult { pool_asset_in: true, cap_evals: 0, passes: 4, ..Default::default() };
-        assert_eq!(swap_gas(&r), GAS_SWAP_SELL + 3 * GAS_SWAP_SELL_PASS);
-        let r = SwapResult { pool_asset_in: false, cap_evals: 9, passes: 4, ..Default::default() };
-        assert_eq!(swap_gas(&r), GAS_SWAP_BUY);
     }
 }

@@ -1,22 +1,18 @@
 // Copyright (c) 2026 Everlong Labs Limited
 
-//! Probes beside the fixture replays:
+//! Semantic probes over scripted doubles, beside the fixture replays: the degrade value is NOT
+//! written on a degraded lever-down when it is still zero (`FLAMMLeverLib.sol:182`); a two-loan
+//! pool's swap uses the pair's own peg / cross (`PegBroken` before `PriceUnchecked` on a sell,
+//! `PriceUnchecked` alone on a buy); the feed ages with `now`, not with the snapshot timestamp;
+//! the spread ceiling floors the band; the lever-up pay leg is floored to the native grid and
+//! `payNative` is ceiled then capped.
 //!
-//! 1. A cross-tab of the chain's revert class against the port's outcome over every grid row (every
-//!    row must agree exactly: the table is a class census).
-//! 2. Semantic probes over scripted doubles: the degrade value is NOT written on a degraded
-//!    lever-down when it is still zero (`FLAMMLeverLib.sol:182`); a two-loan pool's swap uses the
-//!    pair's own peg / cross (`PegBroken` before `PriceUnchecked` on a sell, `PriceUnchecked` alone
-//!    on a buy); the feed ages with `now`, not with the snapshot timestamp; the spread ceiling
-//!    floors the band; the lever-up pay leg is floored to the native grid and `payNative` is ceiled
-//!    then capped.
-
-use std::collections::BTreeMap;
+//! The chain's revert class against the port's outcome is not tabulated here: `e2e_preview_grids`
+//! (`core/e2e.rs`) already walks every row of the same three grids through `Report::compare`,
+//! which fails on any class disagreement and on the returned words as well.
 
 use alloy::primitives::{Address, U256};
-use serde::Deserialize;
 
-use super::common::{build_state, decode_reads, fixture_lines, revert_class, Word, E2E_BLOCKS};
 use crate::evm::protocol::flamm::{
     context::{LeverContext, PoolContext, SwapContext},
     deps::{LeverageHook, Router, SwapHook},
@@ -33,93 +29,6 @@ use crate::evm::protocol::flamm::{
 fn w(x: u64) -> U256 {
     U256::from(x)
 }
-
-// ------------------------------------------------------------------ 1. cross-tab
-
-#[derive(Deserialize)]
-struct GridRow {
-    k: String,
-    #[serde(default)]
-    tag: String,
-    s: Option<serde_json::Value>,
-    #[serde(default)]
-    d: i64,
-    a: Option<Word>,
-    e: Option<String>,
-}
-
-/// For every grid row: chain class (or "ok") x port outcome ("seam", "same", "ok", or the port's
-/// class). Prints the table; asserts that whenever the port refuses, the chain refused with the
-/// same class (the harness's own rule, re-derived here without its pre-seam lists).
-#[test]
-fn cross_tab_chain_class_vs_port_outcome() {
-    let mut tab: BTreeMap<(String, String), usize> = BTreeMap::new();
-    let mut disagreements = Vec::new();
-    for blk in E2E_BLOCKS {
-        let name = format!("core_e2e_grid_{blk}.jsonl.gz");
-        let mut states: std::collections::HashMap<String, (super::common::State, u64)> =
-            Default::default();
-        for line in fixture_lines(&name) {
-            let row: GridRow = serde_json::from_str(&line).expect("row");
-            match row.k.as_str() {
-                "state" => {
-                    let reads = decode_reads(row.s.as_ref().expect("s"));
-                    states.insert(row.tag.clone(), (build_state(&reads), reads.timestamp));
-                }
-                "sw" | "lv" => {
-                    let (s, now) = &states[&row.tag];
-                    let a = row.a.expect("a").0;
-                    let chain = match &row.e {
-                        None => "ok".to_string(),
-                        Some(e) => revert_class(e)
-                            .map(|c| format!("{c:?}"))
-                            .unwrap_or_else(|| format!("unmapped:{}", &e[..10.min(e.len())])),
-                    };
-                    let got = if row.k == "sw" {
-                        s.preview_swap(row.d == 1, a, *now)
-                            .map(|_| ())
-                    } else {
-                        s.preview_lever(row.d == 1, a, *now)
-                            .map(|_| ())
-                    };
-                    let port = match got {
-                        Err(e) if format!("{e:?}") == chain => "same".to_string(),
-                        Err(e) => {
-                            disagreements.push(format!(
-                                "{name}/{} {} d={} a={a}: chain {chain} port {e:?}",
-                                row.tag, row.k, row.d
-                            ));
-                            format!("{e:?}")
-                        }
-                        Ok(()) => {
-                            if chain != "ok" {
-                                disagreements.push(format!(
-                                    "{name}/{} {} d={} a={a}: chain {chain} port answers",
-                                    row.tag, row.k, row.d
-                                ));
-                            }
-                            "ok".to_string()
-                        }
-                    };
-                    *tab.entry((chain, port)).or_default() += 1;
-                }
-                _ => {}
-            }
-        }
-    }
-    eprintln!("chain class -> port outcome (all three e2e grids)");
-    for ((chain, port), n) in &tab {
-        eprintln!("  {chain:<24} {port:<20} {n}");
-    }
-    assert!(
-        disagreements.is_empty(),
-        "{} disagreements, e.g. {}",
-        disagreements.len(),
-        disagreements[0]
-    );
-}
-
-// ------------------------------------------------------------------ 2. scripted doubles
 
 const PRICE: u64 = 10;
 const NOW: u64 = 2_000_000;
