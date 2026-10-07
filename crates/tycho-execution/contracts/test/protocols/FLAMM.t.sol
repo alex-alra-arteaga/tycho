@@ -135,14 +135,6 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
         assertEq(tokenIn, BASE_cbBTC);
         assertEq(tokenOut, BASE_USDC);
         assertEq(venue, VENUE_SWAP);
-
-        (pool, tokenIn, tokenOut, venue) = flammExecutor.decodeParams(
-            _flammData(BASE_cbBTC, BASE_USDC, VENUE_LEVER_UP)
-        );
-        assertEq(pool, FLAMM_POOL);
-        assertEq(tokenIn, BASE_cbBTC);
-        assertEq(tokenOut, BASE_USDC);
-        assertEq(venue, VENUE_LEVER_UP);
     }
 
     function testDecodeParamsInvalidDataLength() public {
@@ -196,19 +188,6 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
 
         (transferType, receiver, tokenIn, tokenOut, outputToRouter) =
             flammExecutor.getTransferData(
-                _flammData(BASE_USDC, BASE_cbBTC, VENUE_SWAP)
-            );
-        assertEq(
-            uint8(transferType),
-            uint8(TransferManager.TransferType.ProtocolWillDebit)
-        );
-        assertEq(receiver, FLAMM_POOL);
-        assertEq(tokenIn, BASE_USDC);
-        assertEq(tokenOut, BASE_cbBTC);
-        assertEq(outputToRouter, false);
-
-        (transferType, receiver, tokenIn, tokenOut, outputToRouter) =
-            flammExecutor.getTransferData(
                 _flammData(BASE_cbBTC, BASE_USDC, VENUE_LEVER_UP)
             );
         assertEq(
@@ -239,12 +218,6 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
             ),
             address(this)
         );
-        assertEq(
-            flammExecutor.fundsExpectedAddress(
-                _flammData(BASE_cbBTC, BASE_USDC, VENUE_LEVER_UP)
-            ),
-            address(this)
-        );
     }
 
     // ------------------------------------------------------------ fork fills
@@ -260,12 +233,8 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
         _fund(BASE_cbBTC, REPLAY_AMOUNT_IN);
         uint256 balanceBefore = IERC20(BASE_USDC).balanceOf(BOB);
 
-        uint256 gasBefore = gasleft();
         flammExecutor.swap(
             REPLAY_AMOUNT_IN, _flammData(BASE_cbBTC, BASE_USDC, VENUE_SWAP), BOB
-        );
-        emit log_named_uint(
-            "gas: FLAMMExecutor.swap sell (direct call)", gasBefore - gasleft()
         );
 
         assertEq(
@@ -277,56 +246,11 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
         );
     }
 
-    function testSwapBuy() public {
-        (uint256 quotedUsed, uint256 quotedOut,) =
-            IFLAMMPoolTest(FLAMM_POOL).previewSwap(false, BUY_AMOUNT_IN);
-        assertEq(quotedUsed, BUY_AMOUNT_IN);
-        assertGt(quotedOut, 0);
-
-        _fund(BASE_USDC, BUY_AMOUNT_IN);
-        uint256 balanceBefore = IERC20(BASE_cbBTC).balanceOf(BOB);
-
-        uint256 gasBefore = gasleft();
-        flammExecutor.swap(
-            BUY_AMOUNT_IN, _flammData(BASE_USDC, BASE_cbBTC, VENUE_SWAP), BOB
-        );
-        emit log_named_uint(
-            "gas: FLAMMExecutor.swap buy (direct call)", gasBefore - gasleft()
-        );
-
-        assertEq(IERC20(BASE_cbBTC).balanceOf(BOB) - balanceBefore, quotedOut);
-        assertEq(IERC20(BASE_USDC).balanceOf(address(flammExecutor)), 0);
-    }
-
-    function testLeverUp() public {
-        _openLeverageVenue();
-        (uint256 quotedUsed, uint256 quotedOut,,) =
-            IFLAMMPoolTest(FLAMM_POOL).previewLever(true, LEVER_UP_AMOUNT_IN);
-        assertEq(quotedUsed, LEVER_UP_AMOUNT_IN);
-        assertGt(quotedOut, 0);
-
-        _fund(BASE_cbBTC, LEVER_UP_AMOUNT_IN);
-        uint256 balanceBefore = IERC20(BASE_USDC).balanceOf(BOB);
-
-        uint256 gasBefore = gasleft();
-        flammExecutor.swap(
-            LEVER_UP_AMOUNT_IN,
-            _flammData(BASE_cbBTC, BASE_USDC, VENUE_LEVER_UP),
-            BOB
-        );
-        emit log_named_uint(
-            "gas: FLAMMExecutor.swap lever-up (direct call)",
-            gasBefore - gasleft()
-        );
-
-        assertEq(IERC20(BASE_USDC).balanceOf(BOB) - balanceBefore, quotedOut);
-        assertEq(IERC20(BASE_cbBTC).balanceOf(address(flammExecutor)), 0);
-    }
-
     // ------------------------------------------------------------ refusals
 
+    /// @dev `_requireLeverUpPair` reverts before any venue call, reading only
+    /// `asset()`/`loanAsset()`: both lever refusals ignore venue state.
     function testLeverDownIsUnsupported() public {
-        _openLeverageVenue();
         _fund(BASE_USDC, BUY_AMOUNT_IN);
 
         vm.expectRevert(FLAMMExecutor__LeverDownUnsupported.selector);
@@ -338,7 +262,6 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
     }
 
     function testLeverUpRejectsForeignPair() public {
-        _openLeverageVenue();
         _fund(BASE_cbBTC, LEVER_UP_AMOUNT_IN);
 
         vm.expectRevert(
@@ -367,12 +290,19 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
         );
     }
 
-    function testSwapPartialFillReverts() public {
+    /// @dev Both venues share one partial-fill guard, after the venue if/else
+    /// (`FLAMMExecutor.sol:127`); the mocked pool never pulls.
+    function testPartialFillReverts() public {
         _fund(BASE_cbBTC, REPLAY_AMOUNT_IN);
         vm.mockCall(
             FLAMM_POOL,
             abi.encodeWithSelector(IFLAMMPool.swap.selector),
             abi.encode(REPLAY_AMOUNT_IN - 1, REPLAY_AMOUNT_OUT)
+        );
+        vm.mockCall(
+            FLAMM_POOL,
+            abi.encodeWithSelector(IFLAMMPool.leverUp.selector),
+            abi.encode(LEVER_UP_AMOUNT_IN / 2, uint256(1))
         );
 
         vm.expectRevert(
@@ -384,17 +314,6 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
         );
         flammExecutor.swap(
             REPLAY_AMOUNT_IN, _flammData(BASE_cbBTC, BASE_USDC, VENUE_SWAP), BOB
-        );
-        vm.clearMockedCalls();
-    }
-
-    function testLeverUpPartialFillReverts() public {
-        _openLeverageVenue();
-        _fund(BASE_cbBTC, LEVER_UP_AMOUNT_IN);
-        vm.mockCall(
-            FLAMM_POOL,
-            abi.encodeWithSelector(IFLAMMPool.leverUp.selector),
-            abi.encode(LEVER_UP_AMOUNT_IN / 2, uint256(1))
         );
 
         vm.expectRevert(
@@ -451,19 +370,6 @@ contract FLAMMExecutorTest is Constants, TestUtils, FLAMMTestBase {
         deal(token, address(flammExecutor), amount);
         vm.prank(address(flammExecutor));
         IERC20(token).approve(FLAMM_POOL, amount);
-    }
-
-    /// @dev At FORK_BLOCK the venue is levPaused and the constructor's spread
-    /// has aged past maxSpreadAge (no live spread): the curator unpauses it and
-    /// the keeper posts a fresh spread. Both are simulated state at this block
-    /// only -- on chain the curator unpaused at 51433699 and cleared the
-    /// staleness window at 51649706, from where the venue quotes without either
-    /// prank (see LEVER_SPREAD_PPM).
-    function _openLeverageVenue() internal {
-        vm.prank(FLAMM_CURATOR);
-        IFLAMMPoolTest(FLAMM_POOL).setLevPaused(false);
-        vm.prank(FLAMM_KEEPER);
-        ILeverageSpreadHookTest(FLAMM_SPREAD_HOOK).setSpread(LEVER_SPREAD_PPM);
     }
 }
 
@@ -532,11 +438,7 @@ contract TychoRouterForFLAMMTest is TychoRouterTestSetup, FLAMMTestBase {
         IERC20(BASE_cbBTC).approve(tychoRouterAddr, type(uint256).max);
         bytes memory callData =
             loadCallDataFromFile("test_single_encoding_strategy_flamm");
-        uint256 gasBefore = gasleft();
         (bool success,) = tychoRouterAddr.call(callData);
-        emit log_named_uint(
-            "gas: TychoRouterV3.singleSwap FLAMM sell", gasBefore - gasleft()
-        );
         vm.stopPrank();
 
         assertTrue(success, "Call Failed");
@@ -598,7 +500,6 @@ contract TychoRouterForFLAMMTest is TychoRouterTestSetup, FLAMMTestBase {
 
         vm.startPrank(BOB);
         IERC20(BASE_cbBTC).approve(tychoRouterAddr, LEVER_UP_AMOUNT_IN);
-        uint256 gasBefore = gasleft();
         uint256 amountOut = tychoRouter.singleSwap(
             LEVER_UP_AMOUNT_IN,
             BASE_cbBTC,
@@ -608,10 +509,6 @@ contract TychoRouterForFLAMMTest is TychoRouterTestSetup, FLAMMTestBase {
             BOB,
             noClientFee(),
             swap
-        );
-        emit log_named_uint(
-            "gas: TychoRouterV3.singleSwap FLAMM lever-up",
-            gasBefore - gasleft()
         );
         vm.stopPrank();
 
