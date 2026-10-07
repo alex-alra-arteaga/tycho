@@ -39,6 +39,29 @@ per-script digests.
   book; the hook is covered here by `lev_hook_{local,fork,band}_fixture` and by every leverage row of
   the pool-core grids and sequences), and the Kyber tracker / fork fixtures of the Go port's section 5,
   which are not on the port's quoting path.
+- Also generated, also not carried over, each measured to add no divergence a carried fixture does not
+  already catch. Two of them are *not* subsets, and the claim for them is the stronger mutation one
+  rather than a containment one:
+  - `mm_irm_grid` holds 2 `rateAtTarget`, 2 `totalSupplyAssets`, 21 `totalBorrowAssets` and 4 `elapsed`
+    values that `edges/mm_irm_edges` does not, so it is a subset on no axis; `mm_irm_edges` is wider only
+    in distinct-value count (323/362/396/66 against 7/3/23/9). What was measured instead: of 13 mutations
+    of `irm::borrow_rate`, 11 are caught by `irm_edges` alone, 1 is an equivalent mutant
+    (`TARGET_UTILIZATION` `>` → `>=`, unread at equality), and the 2 that survive are masked by
+    `UtilsLib.bound` and were shown not to be caught by `mm_irm_grid` either.
+  - `edges/router_sequence_liquidation` is the only sequence carrying the `(liq, ok)` env outcome, so it
+    is not outcome-dominated either; the branch it uniquely reaches is unobservable from a quote.
+  - `core_e2e_{grid,seq}_51324800` (51313000's scenarios at an oracle price 1.54 % away, every
+    `(kind, revert class)` class present in the union of the two surviving blocks) and
+    `edges/core_edge_{grid,seq}_51326000` (51324800's tags in identical order, one clock advance apart)
+    are class-dominated. A discriminating harness — all blocks restored, per-block mismatch counts
+    printed — found no mutation caught at a deleted block and not at a surviving one; a +1-wei fee
+    haircut is caught at the first surviving block in all four tests.
+  - `edges/swap_settlement_sequence_d` has 0 unique `(op, direction, revert class)` classes and 0 unique
+    env kinds or outcomes against the four sequences kept. `_e` was kept: it is the only
+    swap-settlement sequence with env kind `poolcall`.
+
+  To restore one: re-run its generator at the fork block its section names and pin the printed digest in
+  `tests/fixtures.rs::DIGESTS` and that section's table.
 
 ## 1. Swap hook: `AlmCurve`, `EverlongStrategy.fillFee`, `EverlongHook` fill (`tests/swap_hook.rs`)
 
@@ -100,8 +123,7 @@ Generators: `<port>/gen/GateMathFixture.t.sol`, `<port>/gen/MMFixtureBase.sol`, 
   edges (wrapping casts at 2^255, `type(int256).min`, a `mulDivUp` floor at `type(uint256).max`);
   `mm_muldiv_edges`: OpenZeppelin `Math.mulDiv` floor / up over every triple of 15 boundary values plus
   400 seeded triples.
-- `mm_irm_grid`: `borrowRateView` / `borrowRate` over rateAtTarget x supply x utilisation x elapsed;
-  `mm_live_views`: router / account / Morpho / Lens views at 51317000 and warped +1s..+365d;
+- `mm_live_views`: router / account / Morpho / Lens views at 51317000 and warped +1s..+365d;
   `mm_live_settle`: real swaps through the live pool with pre / post state; `mm_real_sell`: the state
   around tx `0x46c3cd72…` replayed in its own block; `mm_multi_venue`: the deployed Router bytecode
   etched with fresh storage over three Morpho venues.
@@ -112,8 +134,8 @@ Generators: `<port>/gen/GateMathFixture.t.sol`, `<port>/gen/MMFixtureBase.sol`, 
   every Router entry, cascade and view from 22 hand-built books, seeded books and threshold sweeps;
   `edges/mm_market_edges`: Blue, the IRM and the account on two created markets with 1-wei neighbours
   of every branch threshold and a 420-row seeded grid.
-- `edges/router_sequence_{a,b}` (520 steps each), `edges/router_sequence_liquidation`,
-  `edges/swap_settlement_sequence_{a,b,c,d}` (600 steps each), `edges/swap_settlement_sequence_e` and
+- `edges/router_sequence_{a,b}` (520 steps each),
+  `edges/swap_settlement_sequence_{a,b,c}` (600 steps each), `edges/swap_settlement_sequence_e` and
   `edges/mm_accrual_grid` (900 rows): JSON lines, one row per transaction, replayed with the Morpho
   markets, positions, `rateAtTarget`, managed fields and the pool ledger carried from the port's own
   transitions and compared with the chain before and after every step.
@@ -123,7 +145,6 @@ Generators: `<port>/gen/GateMathFixture.t.sol`, `<port>/gen/MMFixtureBase.sol`, 
 | `gate_math.json.gz` | `3d2c978672c08d67df2310e34fb9eb936f09562882cfdb366f1d70ca5f14fe3c` | `1451caf859e41753459fb85c35d5468c024546ffdb3df5eefdae5e8a1bae6f94` |
 | `gate_int_edges.json.gz` | `2cf610563f5c38e742ca243b77f9d7c254e5949cad35ae068e33b4d7c0ec123b` | `089f7189127fe806b766f052bde717f4c43eaa07760bbd883e710c5ebc4f2616` |
 | `mm_muldiv_edges.json.gz` | `29f59dd8c4989eaedbc63a4fc5817c9de8e79b548e270b1811f67f22ca050c58` | `639678627c3da3f87372826aa4678febf6e0dcbb3e88c84e6bc1967ef9fd471e` |
-| `mm_irm_grid.json.gz` | `968fdfad25549694a4376a665633cec0f1e9b3cfd6f9301f21c66da98a1ec9c1` | `eeb65d925ac036186cb62f61b6b2ad9f7a94f38de935d2e5a4d912db9af3ef37` |
 | `mm_live_views.json.gz` | `14478ba371bc55b0df5ac5d4427c8e35d66e487796825a7679811ad81c107488` | `167efc2a11d037805ed29d2eddba0548e61da1a17227afca3f36a5a431416998` |
 | `mm_live_settle.json.gz` | `870b1a9fc3b09ab84025292874d9f304ded40ba3c87626d2ec5b703ada3f7f9c` | `6ff776c04df8fcb4d2cf2e12708424d6bfce34612966df4332aa932ed1e48f47` |
 | `mm_real_sell.json.gz` | `d6d6e3ff5e9c84eaab525f570ae31a1c6aff46d9b331e96b93731bfd33330b64` | `04d693f8be8e338a50200c5236800411f5a312a270c950a094dac7a844dd255e` |
@@ -139,11 +160,9 @@ Generators: `<port>/gen/GateMathFixture.t.sol`, `<port>/gen/MMFixtureBase.sol`, 
 | `edges/mm_market_edges.json.gz` | `ae283f592a151ace394b26b10b969d732dfa6697be55953b21d8f4e6ab2fdb0d` | `14bad2954178b3131f8da248249be4028b84c749b52b3ae05deb8a98441ffaeb` |
 | `edges/router_sequence_a.jsonl.gz` | `4bb4ffac4e4b3cbad94c5114c9f1c0c65b971892501155bcab38ad1cf277b55d` | `0c03c48720ccea2147006316afdfe70d966f3bd0dffa43eaf4a9982d34e90bca` |
 | `edges/router_sequence_b.jsonl.gz` | `3adc3e50d26f41a498307bfec81b4735d70c2238ce7575d6e2f737acbce0b646` | `28bafeb5b063e23ea00113a2de7e16eecd14cc70475c52f5bcf07f289e9fe6fa` |
-| `edges/router_sequence_liquidation.jsonl.gz` | `2399691adf0b8116dc8adbb4b9caf06490f37577ff96a8d26b085835ec625a54` | `b81c16705d250fa905a1660675beba71910e5245175e12c7abfbe85a6dbbe927` |
 | `edges/swap_settlement_sequence_a.jsonl.gz` | `8b1d5d0c0a144097078502c5d74f4b7cd07e96b6e21ff1567c62b0b346826cd8` | `077df643e320650debd00a91e342d6533e5c3b8b3da6aefac1b502236ad39dce` |
 | `edges/swap_settlement_sequence_b.jsonl.gz` | `1e1353a7a804097e97ec648a5eec328b12386418a96552f1d560bae7124491ed` | `6d982e6f3f4e4594156ccaab6af160e4d2316323bf9c287ac989fda9b62cec31` |
 | `edges/swap_settlement_sequence_c.jsonl.gz` | `6f4fe3b95b44bd336080f380dc7b7eee45bcb7e87e08a3ea89dc64483daa1740` | `964342e49092760c3c21a685da19c4917ee6512a34312b14768f6cb84a4caaeb` |
-| `edges/swap_settlement_sequence_d.jsonl.gz` | `04eff241349eb5f1da08d98af84e8172450db92969ae4f56a88458b646a8d0c7` | `41388684858fc7aee5249a2b6f1b8a180bade9af984d02fce259e8f2e2d8b013` |
 | `edges/swap_settlement_sequence_e.jsonl.gz` | `efaeb37faac834f3a422b1d12252e9a3fd8c84983a6672214c9b3c21bef094e2` | `d8d590240b6970e75808f0b02ad2d29b9a8d5da13effcf9e7121b89152ea486e` |
 | `edges/mm_accrual_grid.jsonl.gz` | `25b2bc16424dd45f1165bec5ba5b6cf668d55b9674ecdb6d11fa251ebc771590` | `d56a5c0f66d79be98a7b863be4c2b0570ae146d4ab6697bbb12c00610db5a113` |
 
@@ -183,7 +202,9 @@ Generators: `<port>/gen/GateMathFixture.t.sol`, `<port>/gen/MMFixtureBase.sol`, 
 Generators: `<port>/gen/CoreE2EBase.sol`, `<port>/gen/CoreE2EGrid.t.sol`, `<port>/gen/CoreE2ESeq.t.sol` (Base forks at
 blocks 51302915, the parent of the pool's first settled swap, 51313000 and 51324800); `<port>/gen/CoreEdgesBase.sol`,
 `<port>/gen/CoreEdgeGrid.t.sol`, `<port>/gen/CoreEdgeSeq.t.sol` (forks at 51302915, 51324800 and 51326000, written
-without the first set: own interfaces, own state dump, own scenario logic). JSON lines. Every state row
+without the first set: own interfaces, own state dump, own scenario logic). The e2e set is carried over at
+51302915 and 51313000 and the edge set at 51302915 and 51324800; the other two blocks are the near-clones
+of "Generated but not carried over" above. JSON lines. Every state row
 is one complete state read the way the tracker reads it (view getters plus the three storage words no
 view exposes: `FLAMMStore.lastLeverSpreadPpm` at ERC-7201 base + 22 bits 160..191, and the Router
 venues' `managedCollateral` / `managedSupplyShares`), together with deployed views the port must
@@ -216,16 +237,12 @@ to break.
 | --- | --- | --- |
 | `core_e2e_grid_51302915.jsonl.gz` | `ae588fcaf6e08b24b5d7e7b3f12c491b89c73f9e155ceb8641090c5a6004ddd5` | `e089ec3efeeafa6668f00bd6a4e6ddc9e49495097c3c81d0fffbf98e382771f7` |
 | `core_e2e_grid_51313000.jsonl.gz` | `4e21a865486e59b4fc0eae66290ed509fc1afe88254c558b67cad6b7e62258ee` | `1b31022d0a4b0904fb1bfb74f44c01bc825da0e6cf4377636a98a4b49293f0fd` |
-| `core_e2e_grid_51324800.jsonl.gz` | `2d053f484f935e3e715c8f3e8655ef6a32f08c4255a6d8d8d2622f0d303130b1` | `63c8de9c5663499d6ce96929b8f254e66ff294f34b756ee85cf610d6490b2836` |
 | `core_e2e_seq_51302915.jsonl.gz` | `9ae2f16137c0a744dd730758ad97537bb8533ce6a0868367d1113ff7c35c1116` | `fcd3eb6165c36c68e73b31fdd57a7aee997a6f8218d79f9a7331c9b30fb3c359` |
 | `core_e2e_seq_51313000.jsonl.gz` | `e2d4569b540b7853b49e04507e7ba485439aae3ebb26621c28352b411a92536f` | `44933b2f7b4d1f1be8e8fd0cc214e169d79c58e4cf72c5e2ff671ee90933a07e` |
-| `core_e2e_seq_51324800.jsonl.gz` | `6529b264e751e5026344539a039b45bb90542d56b5f501d5ed3f3f5c05f64d45` | `ae062769d95c666eec3ea03b1ed5f87347d1337e5bfffefce53c624278326b51` |
 | `edges/core_edge_grid_51302915.jsonl.gz` | `946d384674b004378198eb5fd023d28fea944ebcf6d626c34994561149d6eba2` | `4ce285898ef6a21e4c07ac7f631d2874711f3ee217c7f998b1360eda9184733e` |
 | `edges/core_edge_grid_51324800.jsonl.gz` | `8c085a8183d9de9a6edbe7fdab5d08e276141a598739bd4a524baf814fe8f570` | `01c82fd2bda2d25addd8d9faf8abdb819793edbac1703ad62bec510815dca21d` |
-| `edges/core_edge_grid_51326000.jsonl.gz` | `463868de0f612bdb55be5cad602a5911b6a9d08b3f2904cb578c42f9edc7d3b4` | `ff05306702daf4f71bd67f73e7e58b28b6d0486bc17f3fe1f091f5e7e81478ac` |
 | `edges/core_edge_seq_51302915.jsonl.gz` | `e6e14db48bcfe28a3f87ff072a5cc2ac70e92e4a27d669c39d3dec9338fca99c` | `3d625c2dd43564c71b20f983f3439c30d276464db28c4721afa8ae15ac4cb328` |
 | `edges/core_edge_seq_51324800.jsonl.gz` | `53414398f523e1507ed8fdd2c2e4f91642f02dba22a195068af4a5ac948b553d` | `fa2f63a6953ce69f7c861d6fefc28941b845ae815b5f7a49e4bea29657892122` |
-| `edges/core_edge_seq_51326000.jsonl.gz` | `1906c0dfc12c37b6f3d7dd5b52ffee245cf1107b6aa5da43ea29dc0773ab341e` | `153ca1d81bce1907c1de451173580eeda623582c115831aa03075260f9ca94c4` |
 
 | generator | sha256 |
 | --- | --- |

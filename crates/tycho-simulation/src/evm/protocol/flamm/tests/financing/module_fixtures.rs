@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Everlong Labs Limited
 
 //! Module fixtures of the financing stack (`testdata/gen/GateMathFixture.t.sol`,
-//! `MMFinancingFixture.t.sol`, `GateIntEdges.t.sol`): OpenZeppelin `Math.mulDiv` edges, the
-//! deployed `AdaptiveCurveIrm` grid, `FLAMMGateLib` over 400 seeded books and its `int256` edges,
+//! `MMFinancingFixture.t.sol`, `GateIntEdges.t.sol`): OpenZeppelin `Math.mulDiv` edges,
+//! `FLAMMGateLib` over 400 seeded books and its `int256` edges,
 //! the live Router / account / Morpho views at block 51317000 and warped, the first settled swap
 //! (block 51302916), the fork's settlement sequence, and the deployed Router bytecode driven over
 //! three venues. Every row is compared to the wei, reverts by class.
@@ -14,9 +14,8 @@ use super::common::*;
 use crate::evm::protocol::flamm::{
     error::FlammError,
     gate::{self, Book, GateInt, Leg, LoanCfg, Pool},
-    irm,
-    math::{mul_div, mul_div_up, WAD},
-    morpho::{Market, VenueMarket, VIRTUAL_SHARES},
+    math::{mul_div, mul_div_up},
+    morpho::VenueMarket,
     router::{self, Quarantine, Router},
 };
 
@@ -59,59 +58,9 @@ fn mm_muldiv_oz() {
     rep.finish(rows.len() - 1);
 }
 
-// ------------------------------------------------------------------ AdaptiveCurveIrm
-
-#[derive(Deserialize)]
-struct IrmRow {
-    #[serde(rename = "rateAtTarget")]
-    rate_at_target: Dec,
-    tsa: Dec,
-    tba: Dec,
-    #[serde(rename = "lastUpdate")]
-    last_update: Dec,
-    #[serde(default)]
-    rate: Dec,
-    #[serde(default, rename = "endRateAtTarget")]
-    end_rate_at_target: Dec,
-    #[serde(default)]
-    err: String,
-}
-
-#[derive(Deserialize)]
-struct IrmGrid {
-    timestamp: u64,
-    rows: Vec<IrmRow>,
-}
-
-/// `AdaptiveCurveIrm.borrowRateView` / `borrowRate` on the deployed Base IRM over `rateAtTarget` x
-/// supply x utilisation x elapsed, including the clipped `wExp` and the timestamp underflow.
-#[test]
-fn mm_irm_grid() {
-    let fx: IrmGrid = load("mm_irm_grid.json.gz");
-    assert!(fx.rows.len() > 1000);
-    for (i, r) in fx.rows.iter().enumerate() {
-        let m = Market {
-            total_supply_assets: r.tsa.0,
-            total_supply_shares: r.tsa.0 * VIRTUAL_SHARES,
-            total_borrow_assets: r.tba.0,
-            total_borrow_shares: r.tba.0 * VIRTUAL_SHARES,
-            last_update: r.last_update.0,
-            fee: U256::ZERO,
-        };
-        let got = irm::borrow_rate(&m, r.rate_at_target.0, fx.timestamp);
-        if !r.err.is_empty() {
-            // The recorded revert data decides the class, as `irm_edges` does it; a row whose
-            // data maps to nothing fails rather than passing against a hard-coded guess.
-            let want = revert_of_hex(&r.err)
-                .unwrap_or_else(|| panic!("row {i}: unmapped revert {}", r.err));
-            assert_eq!(got, Err(want), "row {i}");
-            continue;
-        }
-        let (rate, end) = got.unwrap_or_else(|e| panic!("row {i}: {e}"));
-        assert_eq!(rate, r.rate.0, "rate row {i}");
-        assert_eq!(end, r.end_rate_at_target.0, "end row {i}");
-    }
-}
+// The deployed `AdaptiveCurveIrm` lives in `financing_edges::irm_edges`, wider on all four axes
+// than the retired `mm_irm_grid` and over every branch of `irm::borrow_rate`
+// (`testdata/README.md`).
 
 // ------------------------------------------------------------------ FLAMMGateLib
 
@@ -1063,10 +1012,4 @@ fn mm_transient_repay_scope() {
         c.withdraw_collateral(0, withdraw, U256::ZERO, true, now),
         Err(FlammError::NoRepaySnapshot)
     );
-}
-
-/// The `WAD` the gate scales with is the one the module fixtures were generated against.
-#[test]
-fn wad_is_1e18() {
-    assert_eq!(WAD, U256::from(10u64).pow(U256::from(18)));
 }

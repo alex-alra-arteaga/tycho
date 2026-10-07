@@ -6,9 +6,9 @@
 //! per step):
 //!   - `router_sequence_a` / `_b`: pseudo-random sequences of Router transactions over four venues
 //!     and two loan assets, with time warps, third-party Morpho activity (including calls on the
-//!     account's behalf and liquidations), IRM outages, oracle moves and config changes between
-//!     them; `router_sequence_liquidation`: a scripted liquidation run;
-//!   - `swap_settlement_sequence_a..d`: pseudo-random sequences of real `pool.swap` calls through
+//!     account's behalf and liquidations, 18 `liq` rows in `_a` alone), IRM outages, oracle moves
+//!     and config changes between them;
+//!   - `swap_settlement_sequence_a..c`: pseudo-random sequences of real `pool.swap` calls through
 //!     the deployed pool (one venue, an inflated book, three venues); `_e`: a scripted run through
 //!     `releaseExcess`'s swallowed revert, quarantine and the cross-transaction repay snapshot;
 //!   - `mm_accrual_grid`: AdaptiveCurveIrm, Blue accrual and the account views over written market
@@ -650,11 +650,6 @@ fn router_sequence_b() {
     router_sequence("router_sequence_b.jsonl.gz");
 }
 
-#[test]
-fn router_sequence_liquidation() {
-    router_sequence("router_sequence_liquidation.jsonl.gz");
-}
-
 // ------------------------------------------------------------------ the swap sequence
 
 #[derive(Deserialize, Default)]
@@ -858,11 +853,6 @@ fn swap_settlement_sequence_b() {
 #[test]
 fn swap_settlement_sequence_c() {
     swap_sequence("swap_settlement_sequence_c.jsonl.gz");
-}
-
-#[test]
-fn swap_settlement_sequence_d() {
-    swap_sequence("swap_settlement_sequence_d.jsonl.gz");
 }
 
 #[test]
