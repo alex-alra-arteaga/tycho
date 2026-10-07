@@ -319,6 +319,17 @@ impl FlammPoolState {
             .map(|c| &c.flamm)
     }
 
+    /// The state over another composed pool state (a fixture scenario of the same pool), the
+    /// oracle re-evaluated at the clock.
+    #[cfg(test)]
+    pub(crate) fn with_flamm(mut self, flamm: Flamm) -> Self {
+        if let Ok(core) = self.core.as_mut() {
+            core.flamm = flamm;
+        }
+        self.refresh_oracle();
+        self
+    }
+
     fn pool_asset(&self) -> Address {
         self.statics.pool_asset
     }
