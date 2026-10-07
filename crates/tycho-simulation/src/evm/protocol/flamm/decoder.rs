@@ -541,7 +541,8 @@ pub fn decode_core(st: &Statics, attrs: &Attributes) -> Result<Core, DecodeError
     let sup_a_wad = required(10)?;
     // `Params.aWad` and `_sup.aWad` are one value held twice: the constructor derives the second
     // from the first (`EverlongHook.sol:157-158`) and `setCurveConfig` rewrites both from
-    // `cfg.concentrationWad` (`:289-291`). A copy that disagrees is a corrupted word, not a pool.
+    // `cfg.concentrationWad` (`:289-290`). A copy that disagrees is a corrupted word, not a pool
+    // (`snapshot_decoding_fails_closed` pins the refusal).
     if field(h0, 0, 16) != sup_a_wad {
         return Err(drift("Params.aWad is not _sup.aWad"));
     }
