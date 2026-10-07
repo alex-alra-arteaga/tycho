@@ -116,6 +116,13 @@ pub fn log_ratio_abs_wad(a_wad: U256, b_wad: U256) -> Result<U256, FlammError> {
 /// Solady `FixedPointMathLib.lnWad`'s rational-approximation constants
 /// (`lib/solady/src/utils/FixedPointMathLib.sol:307-343`), as the raw 256-bit words the opcodes
 /// see.
+///
+/// # Attribution
+/// Reproduced from Solady `FixedPointMathLib.lnWad`:
+/// https://github.com/Vectorized/solady/blob/main/src/utils/FixedPointMathLib.sol
+/// License: MIT
+/// Copyright (c) 2022 Solady.
+/// Solady credits the minimax fit to Remco Bloemen under MIT license.
 mod ln {
     use alloy::primitives::{uint, U256};
 
