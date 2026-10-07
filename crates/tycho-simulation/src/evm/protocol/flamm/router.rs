@@ -27,7 +27,7 @@ use super::{
         anchor, assert_entry_gate, assert_gate, price_wads, priced, required_posted_all, GateReads,
         Pool, FEATURE_SUPPLY_LENDING, RELEASE_HYSTERESIS_WAD,
     },
-    math::{checked_add, checked_div, checked_mul, checked_sub, min_u, mul_div, mul_div_up, WAD},
+    math::{checked_add, checked_div, checked_mul, checked_sub, mul_div, mul_div_up, WAD},
     morpho::{VenueMarket, MAX_UINT128, ORACLE_PRICE_SCALE},
 };
 
@@ -171,8 +171,10 @@ impl Router {
         if !r.readable {
             return Ok(r);
         }
-        r.recognized_collateral = min_u(r.collateral, v.managed_collateral);
-        let managed = min_u(t.supply_shares, v.managed_supply_shares);
+        r.recognized_collateral = r.collateral.min(v.managed_collateral);
+        let managed = t
+            .supply_shares
+            .min(v.managed_supply_shares);
         r.recognized_supplied = if managed == t.supply_shares {
             r.supplied
         } else {
@@ -278,7 +280,7 @@ impl Router {
             q.any = true;
             let c = counted(&r)?;
             q.frozen_debt = checked_add(q.frozen_debt, c)?;
-            q.frozen_coll = checked_add(q.frozen_coll, min_u(r.collateral, v.managed_collateral))?;
+            q.frozen_coll = checked_add(q.frozen_coll, r.collateral.min(v.managed_collateral))?;
         }
         Ok(q)
     }
@@ -411,7 +413,10 @@ impl Router {
 
     /// `MMRouterLib.managedShares` (`MMRouterLib.sol:733-736`).
     pub fn managed_shares(&self, v: &Venue) -> U256 {
-        min_u(v.morpho.position.supply_shares, v.managed_supply_shares)
+        v.morpho
+            .position
+            .supply_shares
+            .min(v.managed_supply_shares)
     }
 
     /// `MMRouterLib.recognizedSupplied` (`MMRouterLib.sol:738-740`; reverts `IrmUnreadable` past
@@ -442,7 +447,7 @@ impl Router {
         }
         let required = self.required_collateral(v, rd.debt, price_wad)?;
         let free = rd.collateral.saturating_sub(required);
-        Ok(min_u(free, rd.recognized_collateral))
+        Ok(free.min(rd.recognized_collateral))
     }
 
     /// `MMRouter.reclaimable` (`MMRouterLib.sol:533-540`): every live venue's free collateral at
@@ -522,7 +527,7 @@ impl Router {
             .morpho
             .free_liquidity()
             .saturating_sub(cash_used);
-        let mut sl = min_u(want, cash);
+        let mut sl = want.min(cash);
         if !v.debt_cap.is_zero() {
             let room = v.debt_cap.saturating_sub(debt);
             if room < sl {
@@ -540,7 +545,7 @@ impl Router {
         if !v.max_borrow_rate_wad.is_zero() {
             let (ok, rate) = v
                 .morpho
-                .borrow_rate_after(sl, cash_used, now)?;
+                .try_borrow_rate(sl, cash_used, now)?;
             if !ok || rate > v.max_borrow_rate_wad {
                 return Ok(zero);
             }
@@ -590,8 +595,10 @@ impl Router {
                 continue;
             }
             let rd = self.read(v, now)?;
-            let avail = min_u(rd.recognized_supplied, v.morpho.free_liquidity());
-            let take = min_u(plan.remaining, avail);
+            let avail = rd
+                .recognized_supplied
+                .min(v.morpho.free_liquidity());
+            let take = plan.remaining.min(avail);
             plan.withdraw_take[id as usize] = take;
             plan.remaining -= take;
         }
@@ -615,7 +622,7 @@ impl Router {
             if v.loan_index != idx || !v.borrow_enabled {
                 continue;
             }
-            let want = min_u(plan.remaining, debt_room);
+            let want = plan.remaining.min(debt_room);
             let (sl, post) =
                 self.slice(v, want, coll_avail, plan.withdraw_take[id as usize], price_wad, now)?;
             if sl.is_zero() {
@@ -653,7 +660,7 @@ impl Router {
         }
         let (ok, rate) = v
             .morpho
-            .borrow_rate_after(assets, U256::ZERO, now)?;
+            .try_borrow_rate(assets, U256::ZERO, now)?;
         if !ok || rate > v.max_borrow_rate_wad {
             return Err(FlammError::RateCeiling);
         }
@@ -784,8 +791,7 @@ impl Router {
                     .venues
                     .get_mut(id as usize)
                     .ok_or(FlammError::PanicIndex)?;
-                v.morpho
-                    .account_supply_collateral(post)?;
+                v.morpho.supply_collateral(post)?;
                 v.managed_collateral = checked_add(v.managed_collateral, post)?;
                 posted = checked_add(posted, post)?;
             }
@@ -798,7 +804,7 @@ impl Router {
                 .get_mut(id as usize)
                 .ok_or(FlammError::PanicIndex)?
                 .morpho
-                .account_borrow(sl, now)?;
+                .borrow(sl, now)?;
             borrowed = checked_add(borrowed, sl)?;
         }
         Ok((withdrawn, borrowed, posted))
@@ -826,7 +832,7 @@ impl Router {
             if !rd.readable || rd.debt.is_zero() {
                 continue;
             }
-            let pay = min_u(remaining, rd.debt);
+            let pay = remaining.min(rd.debt);
             self.snapshot_for_proportional(id, now)?;
             let got = self.venues[id as usize]
                 .morpho
@@ -863,13 +869,13 @@ impl Router {
             if room > asset_room {
                 room = asset_room;
             }
-            let take = min_u(remaining, room);
+            let take = remaining.min(room);
             if take.is_zero() {
                 continue;
             }
             let shares = self.venues[id as usize]
                 .morpho
-                .account_supply(take, now)?;
+                .supply(take, now)?;
             let v = &mut self.venues[id as usize];
             v.managed_supply_shares = checked_add(v.managed_supply_shares, shares)?;
             supplied = checked_add(supplied, take)?;
@@ -909,13 +915,13 @@ impl Router {
                 .copied()
                 .ok_or(FlammError::PanicIndex)?;
             let free = self.free_collateral(v, price, now)?;
-            let take = min_u(remaining, free);
+            let take = remaining.min(free);
             if take.is_zero() {
                 continue;
             }
             let v = &mut self.venues[id];
             v.morpho
-                .account_withdraw_collateral(take, now)?;
+                .withdraw_collateral(take, now)?;
             v.managed_collateral = checked_sub(v.managed_collateral, take)?;
             got = checked_add(got, take)?;
             remaining -= take;
@@ -956,8 +962,7 @@ impl Router {
             return Err(FlammError::InvalidConfig);
         }
         let v = &mut self.venues[id as usize];
-        v.morpho
-            .account_supply_collateral(assets)?;
+        v.morpho.supply_collateral(assets)?;
         v.managed_collateral = checked_add(v.managed_collateral, assets)?;
         Ok(())
     }
@@ -974,7 +979,11 @@ impl Router {
         now: u64,
     ) -> Result<(), FlammError> {
         let v = self.venue_at(id)?;
-        let recognized = min_u(v.morpho.position.collateral, v.managed_collateral);
+        let recognized = v
+            .morpho
+            .position
+            .collateral
+            .min(v.managed_collateral);
         if assets.is_zero() || assets > recognized {
             return Err(FlammError::InsufficientCollateral);
         }
@@ -1006,7 +1015,7 @@ impl Router {
         }
         let v = &mut self.venues[id as usize];
         v.morpho
-            .account_withdraw_collateral(assets, now)?;
+            .withdraw_collateral(assets, now)?;
         v.managed_collateral = checked_sub(v.managed_collateral, assets)?;
         Ok(())
     }
@@ -1030,7 +1039,8 @@ impl Router {
         }
         self.venues[id as usize]
             .morpho
-            .account_borrow(assets, now)
+            .borrow(assets, now)
+            .map(|_| ())
     }
 
     /// `MMRouter.repay` (`MMRouter.sol:227-234`): snapshot, then `min(assets, debtOf)` repaid into
@@ -1041,7 +1051,7 @@ impl Router {
         let v = &mut self.venues[id as usize];
         let debt = v.morpho.debt_of(now)?;
         v.morpho
-            .account_repay(min_u(assets, debt), now)
+            .account_repay(assets.min(debt), now)
     }
 
     /// `MMRouter.supply` (`MMRouter.sol:237-248`): `requireSuppliable` (`MMRouterLib.sol:707-711`),
@@ -1065,7 +1075,7 @@ impl Router {
             return Err(FlammError::SupplyCapExceeded);
         }
         let v = &mut self.venues[id as usize];
-        let shares = v.morpho.account_supply(assets, now)?;
+        let shares = v.morpho.supply(assets, now)?;
         v.managed_supply_shares = checked_add(v.managed_supply_shares, shares)?;
         Ok(shares)
     }
@@ -1140,7 +1150,7 @@ pub fn take_loan(
     }
     pool.loans[i].liquid = checked_add(pool.loans[i].liquid, used)?;
     let (_, _, debt) = r.position(idx, now)?;
-    let pay = min_u(debt, pool.loans[i].liquid);
+    let pay = debt.min(pool.loans[i].liquid);
     if !pay.is_zero() {
         let repaid = r.repay_cascade(idx, pay, now)?;
         pool.loans[i].liquid = checked_sub(pool.loans[i].liquid, repaid)?;

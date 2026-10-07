@@ -187,11 +187,12 @@ impl SpreadHookSlot {
     }
 }
 
-/// The pool's hook set: the listed addresses (`hooks()`: invariant, fee, recenter, controller,
-/// leverage, spread, loanSwap) and, per role, the kind the registry names with that kind's state.
+/// The pool's hook set: per role, the kind the registry names with that kind's state. The listed
+/// addresses (`hooks()`: invariant, fee, recenter, controller, leverage, spread, loanSwap) are not
+/// carried: [`decode_core`](super::decoder::decode_core) reads all seven and refuses any set that
+/// is not the statics' own hooks, so after a decode they hold nothing the statics do not.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct PoolHooks<H, L> {
-    pub addrs: [Address; 7],
     pub swap: SwapHookSlot<H>,
     pub leverage: LeverageHookSlot<L>,
     pub spread: SpreadHookSlot,

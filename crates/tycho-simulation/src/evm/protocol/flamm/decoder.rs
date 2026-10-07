@@ -35,7 +35,7 @@ use super::{
     words::{
         account_market_slot, address_of, array_base, factory_is_pool_slot, field, field_addr,
         field_bool, field_u64, hash_of, pricefeed_token_slot, router_record_slot, word_of,
-        Attributes, WordError, Words, ERC20_NS, FLAMM_NS,
+        Attributes, Words, ERC20_NS, FLAMM_NS,
     },
     Flamm,
 };
@@ -68,15 +68,6 @@ impl std::fmt::Display for DecodeError {
             Self::Pin(s) => write!(f, "unregistered code or immutable: {s}"),
             Self::Drift(s) => write!(f, "wiring drift: {s}"),
             Self::Unsupported(s) => write!(f, "unsupported configuration: {s}"),
-        }
-    }
-}
-
-impl From<WordError> for DecodeError {
-    fn from(e: WordError) -> Self {
-        match e {
-            WordError::Missing(s) => Self::Missing(s),
-            WordError::Malformed(s) => Self::Malformed(s),
         }
     }
 }
@@ -151,13 +142,10 @@ pub struct Statics {
     pub venue_0_irm: Address,
     pub venue_0_oracle: Address,
     pub venue_0_oracle_scale_factor: U256,
-    pub venue_0_oracle_base_feed_1: Address,
-    pub feed_mo0_secondary_proxy: Address,
     pub feed_mo0_max_sync_iterations: u32,
     pub feed_asset_proxy: Address,
     pub feed_loan0_proxy: Address,
     pub feed_seq_proxy: Address,
-    pub feed_mo0_proxy: Address,
 }
 
 /// The component id of the lever-up venue: `pool (20 bytes) || 0x00000000 || uint64(1)`.
@@ -198,9 +186,9 @@ impl Statics {
                 .get(n)
                 .ok_or_else(|| DecodeError::Missing(n.to_owned()))
         };
-        let addr = |n: &str| -> Result<Address, DecodeError> { Ok(address_of(n, get(n)?)?) };
-        let word = |n: &str| -> Result<U256, DecodeError> { Ok(word_of(n, get(n)?)?) };
-        let hash = |n: &str| -> Result<B256, DecodeError> { Ok(hash_of(n, get(n)?)?) };
+        let addr = |n: &str| -> Result<Address, DecodeError> { address_of(n, get(n)?) };
+        let word = |n: &str| -> Result<U256, DecodeError> { word_of(n, get(n)?) };
+        let hash = |n: &str| -> Result<B256, DecodeError> { hash_of(n, get(n)?) };
         let pin = |n: &str, want: B256| -> Result<(), DecodeError> {
             let got = hash(n)?;
             if got != want {
@@ -311,36 +299,25 @@ impl Statics {
             venue_0_irm,
             venue_0_oracle,
             venue_0_oracle_scale_factor: word("venue_0_oracle_scale_factor")?,
-            venue_0_oracle_base_feed_1,
-            feed_mo0_secondary_proxy,
             feed_mo0_max_sync_iterations,
             feed_asset_proxy: addr("feed_asset_proxy")?,
             feed_loan0_proxy: addr("feed_loan0_proxy")?,
             feed_seq_proxy: addr("feed_seq_proxy")?,
-            feed_mo0_proxy,
         })
     }
 }
 
-/// The four feeds as decoded from the attributes.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Feeds {
-    pub asset: Feed,
-    pub loan0: Feed,
-    pub seq: Feed,
-    pub mo0: Feed,
-}
-
 /// The decoded, consistency-checked state of a component: the composed pool state (with the
 /// Morpho market oracle still to be evaluated at a clock,
-/// [`ProtocolSim::apply_block`][apply_block]), the feeds it was built from, and the scheduled
-/// change the quote refuses across.
+/// [`ProtocolSim::apply_block`][apply_block]) and the scheduled change the quote refuses across.
 ///
 /// [apply_block]: tycho_common::simulation::protocol_sim::ProtocolSim::apply_block
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Core {
     pub flamm: Flamm,
-    pub feeds: Feeds,
+    /// The Morpho market oracle's own feed, the one feed a quote re-reads at each clock; the
+    /// asset, loan-0 and sequencer feeds are read once here into `flamm.feed`.
+    pub mo0: Feed,
     /// The earliest `executableAt` of a pending implementation, hook set, venue or loan-asset
     /// change (`FLAMMFactory.sol:53-54`, `FLAMMStore.sol:292-297`, `:308-311`), at least 1 while
     /// one is pending and 0 when none is; a quote at or past it is refused.
@@ -704,12 +681,13 @@ pub fn decode_core(st: &Statics, attrs: &Attributes) -> Result<Core, DecodeError
     let has_irm = irm != Address::ZERO;
 
     // ---- Morpho Blue and the IRM (schema 2.5d, 2.5e, 2.8)
-    let mm0 = w.external("mm:0:market:0")?;
-    let mm1 = w.external("mm:0:market:1")?;
-    let mm2 = w.external("mm:0:market:2")?;
-    let p0 = w.external("mm:0:position:0")?;
-    let p1 = w.external("mm:0:position:1")?;
-    let rate_at_target = if has_irm { w.external("irm:0:rate_at_target")? } else { U256::ZERO };
+    let mm0 = w.required_word("mm:0:market:0")?;
+    let mm1 = w.required_word("mm:0:market:1")?;
+    let mm2 = w.required_word("mm:0:market:2")?;
+    let p0 = w.required_word("mm:0:position:0")?;
+    let p1 = w.required_word("mm:0:position:1")?;
+    let rate_at_target =
+        if has_irm { w.required_word("irm:0:rate_at_target")? } else { U256::ZERO };
     if rate_at_target.bit(255) {
         return Err(DecodeError::Unsupported("a negative rateAtTarget".into()));
     }
@@ -848,11 +826,11 @@ pub fn decode_core(st: &Statics, attrs: &Attributes) -> Result<Core, DecodeError
         fee_cap_wad,
         share_supply,
         last_lever_spread_ppm,
-        hooks: PoolHooks { addrs, swap, leverage, spread },
+        hooks: PoolHooks { swap, leverage, spread },
         router: mm_router,
         feed,
     };
-    Ok(Core { flamm, feeds: Feeds { asset, loan0, seq, mo0 }, scheduled_at })
+    Ok(Core { flamm, mo0, scheduled_at })
 }
 
 /// What a snapshot decodes into, or why it is refused: the static identity, the component's
@@ -865,7 +843,7 @@ fn decode_snapshot(
         .component
         .tokens
         .iter()
-        .map(|t| address_of("component token", t).map_err(DecodeError::from))
+        .map(|t| address_of("component token", t))
         .collect::<Result<_, _>>()?;
     if tokens != [statics.pool_asset, statics.loan_asset_0] {
         return Err(DecodeError::Drift(format!(

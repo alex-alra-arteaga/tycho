@@ -44,7 +44,6 @@ use super::{
     error::FlammError,
     feeds::FeedError,
     hook::HookState,
-    lever::LeverResult,
     math::PPM,
     morpho::VenueMarket,
     pricefeed::feed_read,
@@ -117,10 +116,6 @@ enum Refusal {
     /// The pool would fill this much of the input: a partial fill, which `FLAMMExecutor`
     /// reverts on.
     Partial(U256),
-    /// The fill pays nothing.
-    Nothing,
-    /// The lever-up venue only sells the pool asset (lever-down is not quoted).
-    LeverDown,
 }
 
 /// Whether a revert is a property of the pool's state at this clock rather than of the size
@@ -177,12 +172,6 @@ impl From<Refusal> for SimulationError {
                 ),
                 None,
             ),
-            Refusal::Nothing => Self::InvalidInput("flamm: the fill pays nothing".into(), None),
-            Refusal::LeverDown => Self::InvalidInput(
-                "flamm: the lever-up venue only sells the pool asset (lever-down is not quoted)"
-                    .into(),
-                None,
-            ),
         }
     }
 }
@@ -218,7 +207,7 @@ impl RateCap {
         let passes = |delta_borrow: U256| -> Option<bool> {
             match v
                 .morpho
-                .borrow_rate_after(delta_borrow, U256::ZERO, now)
+                .try_borrow_rate(delta_borrow, U256::ZERO, now)
             {
                 Ok((true, rate)) => Some(rate <= cap),
                 Ok((false, _)) | Err(_) => None,
@@ -396,7 +385,7 @@ impl FlammPoolState {
         };
         core.flamm.block = block;
         core.flamm.timestamp = clock;
-        match core.feeds.mo0.oracle_price(
+        match core.mo0.oracle_price(
             st.venue_0_oracle_scale_factor,
             clock,
             st.feed_mo0_max_sync_iterations,
@@ -495,10 +484,14 @@ impl FlammPoolState {
     /// amountIn, 1, to, block.timestamp)` or `FLAMM.leverUp(amountIn, 1, to, block.timestamp)`,
     /// with the pool's own reverts as refusals. The fill may be partial: [`Self::full_fill`]
     /// refuses those.
+    ///
+    /// The lever-up venue only levers up, so `dir` is `Sell` there and is not read: every caller
+    /// refuses the other direction first ([`ProtocolSim::get_amount_out`] and
+    /// [`ProtocolSim::get_limits`] on the venue, [`Self::lever_rate`] by only probing `Sell`).
     fn settle(&self, flamm: &Flamm, dir: Direction, amount_in: U256) -> Result<Fill, Refusal> {
         let now = self.clock;
-        match (self.venue(), dir) {
-            (VenueKind::Swap, _) => {
+        match self.venue() {
+            VenueKind::Swap => {
                 let (token_in, token_out) = match dir {
                     Direction::Sell => (self.pool_asset(), self.loan_asset()),
                     Direction::Buy => (self.loan_asset(), self.pool_asset()),
@@ -508,25 +501,28 @@ impl FlammPoolState {
                     .map_err(Refusal::Pool)?;
                 Ok(Fill { used: r.amount_in_used, out: r.amount_out, gas: swap_gas(&r), post })
             }
-            (VenueKind::LeverUp, Direction::Sell) => {
+            VenueKind::LeverUp => {
+                // `dir` is unread below, so a future caller that reached this venue with `Buy`
+                // would silently take the lever-up path. Every caller refuses that direction
+                // first; this keeps the refusal here too, where the assumption is used.
+                debug_assert!(dir == Direction::Sell, "the lever-up venue only levers up");
                 let (r, post) = flamm
                     .execute_lever(true, amount_in, U256::from(1u8), now, now)
                     .map_err(Refusal::Pool)?;
-                Ok(Fill { used: r.amount_in_used, out: r.amount_out, gas: lever_gas(&r), post })
+                Ok(Fill { used: r.amount_in_used, out: r.amount_out, gas: GAS_LEVER_UP, post })
             }
-            (VenueKind::LeverUp, Direction::Buy) => Err(Refusal::LeverDown),
         }
     }
 
-    /// [`Self::settle`], refusing a fill the pool would clip (`amountInUsed < amountIn`) or that
-    /// pays nothing: `FLAMMExecutor` reverts on a partial fill, so such a size is not a quote.
+    /// [`Self::settle`], refusing a fill the pool would clip (`amountInUsed < amountIn`):
+    /// `FLAMMExecutor` reverts on a partial fill, so such a size is not a quote. A settled fill
+    /// always pays something — `FLAMMSwapLib._validate` refuses a zero NET (`swap.rs`,
+    /// `FillInvalid`), `lever_plan_up` refuses a zero payout the same way, and the `1` this
+    /// passes for `minAmountOut` would be `Slippage` before either — so there is no third case.
     fn full_fill(&self, flamm: &Flamm, dir: Direction, amount_in: U256) -> Result<Fill, Refusal> {
         let f = self.settle(flamm, dir, amount_in)?;
         if f.used != amount_in {
             return Err(Refusal::Partial(f.used));
-        }
-        if f.out.is_zero() {
-            return Err(Refusal::Nothing);
         }
         Ok(f)
     }
@@ -640,8 +636,8 @@ impl FlammPoolState {
     /// never dust: the pool clips only above the limit.
     fn is_dust(&self, flamm: &Flamm, dir: Direction, amount: U256, r: &Refusal) -> bool {
         match r {
-            Refusal::Pool(_) | Refusal::Nothing => {}
-            Refusal::Partial(_) | Refusal::LeverDown => return false,
+            Refusal::Pool(_) => {}
+            Refusal::Partial(_) => return false,
         }
         match self.limit(flamm, dir) {
             Ok((limit, _)) => amount <= limit,
@@ -663,7 +659,7 @@ impl FlammPoolState {
                 .filter(|v| !v.retired)
                 .map(|v| VenueClock::at(v, now))
                 .collect(),
-            oracle: core.feeds.mo0.oracle_price(
+            oracle: core.mo0.oracle_price(
                 st.venue_0_oracle_scale_factor,
                 now,
                 st.feed_mo0_max_sync_iterations,
@@ -692,10 +688,6 @@ fn swap_gas(r: &SwapResult) -> u64 {
         gas = gas.saturating_add((r.passes - 1).saturating_mul(GAS_SWAP_SELL_PASS));
     }
     gas
-}
-
-fn lever_gas(_r: &LeverResult) -> u64 {
-    GAS_LEVER_UP
 }
 
 fn token_address(t: &Token) -> Result<Address, SimulationError> {
@@ -864,7 +856,11 @@ impl ProtocolSim for FlammPoolState {
             return Ok(empty());
         }
         if (self.venue(), dir) == (VenueKind::LeverUp, Direction::Buy) {
-            return Err(Refusal::LeverDown.into());
+            return Err(SimulationError::InvalidInput(
+                "flamm: the lever-up venue only sells the pool asset (lever-down is not quoted)"
+                    .into(),
+                None,
+            ));
         }
         let flamm = self.quotable()?;
         let amount = amount_to_u256(&amount_in)?;
@@ -1049,6 +1045,5 @@ mod tests {
         assert_eq!(swap_gas(&r), GAS_SWAP_SELL + 3 * GAS_SWAP_SELL_PASS);
         let r = SwapResult { pool_asset_in: false, cap_evals: 9, passes: 4, ..Default::default() };
         assert_eq!(swap_gas(&r), GAS_SWAP_BUY);
-        assert_eq!(lever_gas(&LeverResult::default()), GAS_LEVER_UP);
     }
 }
