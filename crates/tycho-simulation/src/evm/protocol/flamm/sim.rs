@@ -421,9 +421,9 @@ impl FlammPoolState {
     /// debt up at the flat allowance. A buy's ceiling is `physical + posted` and never consults
     /// the venue at all (`FLAMMSwapLib.sol:151`), and a sell's is `min(room, liquid + funding)`
     /// (`:159-166`), so a sell paid out of the tracked liquid still fills. The recorded grids
-    /// carry the proof: at the three core-edge blocks the `irm_dt_3601` scenario (its market
+    /// carry the proof: at the two core-edge blocks the `irm_dt_3601` scenario (its market
     /// 3,601 seconds stale against a 3,600-second grace) and the `oracle_revert` / `oracle_zero`
-    /// scenarios answer 44 to 50 `previewSwap` rows and 44 to 48 `previewLever` rows apiece, and
+    /// scenarios answer 44 to 48 `previewSwap` rows and 46 to 48 `previewLever` rows apiece, and
     /// the `irm_quarantine` scenario of every e2e grid answers 39 `previewSwap` rows; the port
     /// reproduces all of them (`tests/core/e2e.rs`), so the refusals the envelope adds are its
     /// own, not the core's.
@@ -950,7 +950,9 @@ impl ProtocolSim for FlammPoolState {
         let attrs = Arc::make_mut(&mut self.attrs);
         for (name, value) in delta.updated_attributes {
             match name.as_str() {
-                "block_number" => self.block = u64::from(value),
+                "block_number" => {
+                    self.block = u64::from(value);
+                }
                 "block_timestamp" => {}
                 _ => {
                     attrs.insert(name, value);
