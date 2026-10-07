@@ -50,6 +50,8 @@ STAGES = [
     ("real", 51433135, "feed", [], True),
     ("real", 51433218, "feed", [], True),
     ("real", 51433699, "0xcf29fef37feb3c9878cb16cbb96fa7f5a278178d34a61625d322e66146b73640", [], True),  # LevPauseSet(false)
+    ("real", 51649706, "0x441839955de1f9bafe77eaaa96a8ba36517ae1c357c218a0f7919e516d22bdd1", [], True),  # MaxSpreadAgeSet(0)
+    ("catchup", 51670000, None, [], True),
 ]
 
 
@@ -99,7 +101,7 @@ def record_grids(rpc, block, ts, mode):
         for a in [1, 15000]:
             p.lever(True, a)
         p.lever(False, 10 ** 6)
-        sell_edge = buy_edge = None
+        sell_edge = buy_edge = lever_edge = None
     else:
         sells = G.log_grid(9) + [15000, 15001, 14999]
         buys = G.log_grid(12)
@@ -111,10 +113,16 @@ def record_grids(rpc, block, ts, mode):
         buy_edge = p.edge(False)
         for a in (1, 1000, 15000, 10 ** 6, 10 ** 8):
             p.lever(True, a)
+        # The lever-up edge, the size the venue's get_limits answers. Its ~130 probes are worth
+        # making only where the venue fills at all: a lever-up refuses on the spread and the pause
+        # before the size is looked at, so where none of the sizes above filled there is no edge
+        # to locate and no row is emitted. Every probe above is already cached, so this gate is
+        # free; the replay asserts the port finds no limit wherever no edge is recorded.
+        lever_edge = p.lever_edge() if any(p.lever_full(True, a) for a in (1, 1000, 15000)) else None
         for a in (1, 10 ** 6, 10 ** 9):
             p.lever(False, a)
     spot = p.call(G.HOOK, G.SEL_SPOT + (G.R.w256(0).hex() * 9))
-    return {
+    out = {
         "note": "eth_call at block %d (timestamp %d): pool.previewSwap / previewLever on the sizes below, EverlongHook.spot; "
                 "the edges are the largest fully consumed sizes located by doubling from 1 and bisection, every probe "
                 "recorded as a row" % (block, ts),
@@ -126,6 +134,9 @@ def record_grids(rpc, block, ts, mode):
         "lever_down": [p.rows[k] for k in sorted(p.rows) if k[0] == "lever_down"],
         "spot": spot,
     }
+    if lever_edge is not None:
+        out["lever_edge"] = str(lever_edge)
+    return out
 
 
 def main():
