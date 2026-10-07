@@ -444,7 +444,7 @@ fn router_views_check(
                 rep,
                 &format!("{ctx} borrowRateAfter({},{},{})", a.venue, a.v.db[i].0, a.v.ds[i].0),
                 rate,
-                vm.borrow_rate_after(a.v.db[i].0, a.v.ds[i].0, now)
+                vm.try_borrow_rate(a.v.db[i].0, a.v.ds[i].0, now)
                     .map(|(ok, x)| vec![bool_word(ok), x]),
             );
             n += 1;
@@ -986,7 +986,7 @@ fn morpho_accrual_grid() {
             &mut rep,
             &format!("{ctx} borrowRateAfter({},{})", row.acct.db.0, row.acct.ds.0),
             &row.acct.rate,
-            vm.borrow_rate_after(row.acct.db.0, row.acct.ds.0, now)
+            vm.try_borrow_rate(row.acct.db.0, row.acct.ds.0, now)
                 .map(|(ok, rate)| vec![bool_word(ok), rate]),
         );
 

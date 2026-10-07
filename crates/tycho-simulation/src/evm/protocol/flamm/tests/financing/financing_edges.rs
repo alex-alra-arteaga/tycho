@@ -463,7 +463,7 @@ fn account_edges() {
             );
         }
         for d in &r.rate_after {
-            let got = v.borrow_rate_after(d.db.0, d.ds.0, r.now);
+            let got = v.try_borrow_rate(d.db.0, d.ds.0, r.now);
             let dctx = format!("{ctx} borrowRateAfter({},{})", d.db.0, d.ds.0);
             if !d.res.ok {
                 let want = revert_of_hex(&d.res.revert);
@@ -497,12 +497,10 @@ fn account_edges() {
                     r0 = a;
                     r1 = s;
                 }),
-            3 => v.account_borrow(r.a.0, r.now),
-            4 => v
-                .account_supply(r.a.0, r.now)
-                .map(|x| r0 = x),
-            5 => v.account_supply_collateral(r.a.0),
-            6 => v.account_withdraw_collateral(r.a.0, r.now),
+            3 => v.borrow(r.a.0, r.now).map(|_| ()),
+            4 => v.supply(r.a.0, r.now).map(|x| r0 = x),
+            5 => v.supply_collateral(r.a.0),
+            6 => v.withdraw_collateral(r.a.0, r.now),
             _ => panic!("op {}", r.op),
         };
         let mctx = format!("{ctx} op={} a={} s={}", r.op, r.a.0, r.s.0);

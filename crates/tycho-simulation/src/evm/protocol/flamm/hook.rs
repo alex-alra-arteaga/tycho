@@ -18,7 +18,7 @@ use super::{
     context::{PoolContext, SwapContext},
     error::FlammError,
     fee::{self, FeeParams, FeeState},
-    math::{checked_add, checked_mul, checked_sub, div, mul_div, HALF_WAD, WAD},
+    math::{checked_add, checked_div, checked_mul, checked_sub, mul_div, HALF_WAD, WAD},
 };
 
 /// `EverlongHook.KAPPA_SEED` (`EverlongHook.sol:41`): the scale an empty accounted book is
@@ -264,11 +264,11 @@ impl HookState {
     ) -> Result<(FillResult, Book), FlammError> {
         let c = self.cap_fill(ctx, fee_wad, &b, false)?;
         let fr = FillResult { cap_evals: c.evals, ..Default::default() };
-        let net_native = div(c.net, self.loan_scale)?;
+        let net_native = checked_div(c.net, self.loan_scale)?;
         if c.used.is_zero() || c.gross.is_zero() || net_native.is_zero() {
             return Ok((fr, b));
         }
-        let gross_native = div(c.gross, self.loan_scale)?;
+        let gross_native = checked_div(c.gross, self.loan_scale)?;
         b.rv = checked_add(b.rv, c.used)?;
         b.rs = checked_sub(b.rs, c.gross)?;
         // netNative * LOAN_SCALE <= net <= gross.
@@ -301,7 +301,7 @@ impl HookState {
             return Ok((fr, b));
         }
         // Math.ceilDiv (OZ 4.8, Math.sol:45-48): (a - 1) / b + 1 for a != 0.
-        let used_native = div(c.used - U256::from(1), self.loan_scale)? + U256::from(1);
+        let used_native = checked_div(c.used - U256::from(1), self.loan_scale)? + U256::from(1);
         let paid_l18 = checked_mul(used_native, self.loan_scale)?;
         b.rs = checked_add(b.rs, c.used)?;
         if paid_l18 > c.used {

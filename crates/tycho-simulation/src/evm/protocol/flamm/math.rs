@@ -113,12 +113,6 @@ pub fn checked_mul(a: U256, b: U256) -> Result<U256, FlammError> {
         .ok_or(FlammError::PanicArithmetic)
 }
 
-/// `a - b` when `a > b`, else zero: the `a > b ? a - b : 0` idiom the curve uses on every output
-/// leg.
-pub fn sat_sub(a: U256, b: U256) -> U256 {
-    a.saturating_sub(b)
-}
-
 /// `Math.ceilDiv(a, b)` (`Math.sol:45-48`): `a == 0 ? 0 : (a - 1) / b + 1`, so a zero divisor is
 /// `Panic(0x12)` only for a non-zero dividend.
 pub fn div_ceil(a: U256, b: U256) -> Result<U256, FlammError> {
@@ -135,21 +129,6 @@ pub fn div_ceil(a: U256, b: U256) -> Result<U256, FlammError> {
 pub fn checked_div(a: U256, b: U256) -> Result<U256, FlammError> {
     a.checked_div(b)
         .ok_or(FlammError::PanicDivZero)
-}
-
-/// Solidity `a / b`: the floor quotient, `Panic(0x12)` on a zero divisor ([`checked_div`] under
-/// the name the curve and hook ports use).
-pub fn div(a: U256, b: U256) -> Result<U256, FlammError> {
-    checked_div(a, b)
-}
-
-/// The smaller of `a` and `b` (`b` on a tie), the `a < b ? a : b` idiom.
-pub fn min_u(a: U256, b: U256) -> U256 {
-    if a < b {
-        a
-    } else {
-        b
-    }
 }
 
 /// `1e6`, `FLAMMLeverLib.PPM` / `EverlongLeverageHook.PPM`.
@@ -290,11 +269,7 @@ mod tests {
         assert_eq!(div_ceil(U256::MAX, U256::from(1)), Ok(U256::MAX));
         assert_eq!(div_ceil(U256::MAX, U256::MAX), Ok(U256::from(1)));
         assert_eq!(checked_div(U256::from(7), U256::ZERO), Err(FlammError::PanicDivZero));
-        assert_eq!(div(U256::from(7), U256::ZERO), Err(FlammError::PanicDivZero));
-        assert_eq!(div(U256::from(7), U256::from(2)), Ok(U256::from(3)));
-        assert_eq!(min_u(U256::from(2), U256::from(3)), U256::from(2));
-        assert_eq!(min_u(U256::from(3), U256::from(2)), U256::from(2));
-        assert_eq!(min_u(U256::from(3), U256::from(3)), U256::from(3));
+        assert_eq!(checked_div(U256::from(7), U256::from(2)), Ok(U256::from(3)));
         assert_eq!(PPM, U256::from(1_000_000u64));
         assert_eq!(UINT48_MAX, 0xffff_ffff_ffff);
     }

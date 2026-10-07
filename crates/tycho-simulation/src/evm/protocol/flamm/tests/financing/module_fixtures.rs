@@ -619,7 +619,7 @@ fn check_account(name: &str, m: &VenueMarket, now: u64, w: &FxAccount) {
     }
     for row in &w.borrow_rate_after {
         let (ok, rate) = m
-            .borrow_rate_after(row.d_borrow.0, row.d_supply_down.0, now)
+            .try_borrow_rate(row.d_borrow.0, row.d_supply_down.0, now)
             .unwrap();
         let msg = format!("{name} borrowRateAfter({}, {})", row.d_borrow.0, row.d_supply_down.0);
         assert_eq!(ok, row.ok, "{msg}");

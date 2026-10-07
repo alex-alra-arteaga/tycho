@@ -15,7 +15,7 @@ use alloy::primitives::U256;
 use super::{
     error::FlammError,
     irm::borrow_rate,
-    math::{checked_add, checked_mul, min_u, mul_div, mul_div_up, WAD},
+    math::{checked_add, checked_mul, mul_div, mul_div_up, WAD},
     morpho::{
         Market, VenueMarket, MAX_UINT128, THREE_WAD, TWO_WAD, VIRTUAL_ASSETS, VIRTUAL_SHARES,
     },
@@ -223,40 +223,16 @@ impl VenueMarket {
             .saturating_sub(self.market.total_borrow_assets)
     }
 
-    /// `MorphoBlueAccount.borrowRateAfter` (`MorphoBlueAccount.sol:342-348`).
-    pub fn borrow_rate_after(
-        &self,
-        delta_borrow: U256,
-        delta_supply_down: U256,
-        now: u64,
-    ) -> Result<(bool, U256), FlammError> {
-        self.try_borrow_rate(delta_borrow, delta_supply_down, now)
-    }
-
     // ------------------------------------------------------------------ normal lane
     // (Router-driven)
-
-    /// `MorphoBlueAccount.supplyCollateral` (`MorphoBlueAccount.sol:119-126`): Blue's
-    /// `supplyCollateral` (no accrual).
-    pub fn account_supply_collateral(&mut self, assets: U256) -> Result<(), FlammError> {
-        self.supply_collateral(assets)
-    }
-
-    /// `MorphoBlueAccount.withdrawCollateral` (`MorphoBlueAccount.sol:129-136`): Blue's
-    /// `withdrawCollateral` (accrual, health).
-    pub fn account_withdraw_collateral(
-        &mut self,
-        assets: U256,
-        now: u64,
-    ) -> Result<(), FlammError> {
-        self.withdraw_collateral(assets, now)
-    }
-
-    /// `MorphoBlueAccount.borrow` (`MorphoBlueAccount.sol:139-145`): Blue's `borrow(assets, 0)` to
-    /// the pool.
-    pub fn account_borrow(&mut self, assets: U256, now: u64) -> Result<(), FlammError> {
-        self.borrow(assets, now).map(|_| ())
-    }
+    //
+    // `MorphoBlueAccount.supplyCollateral` / `withdrawCollateral` / `borrow` / `supply`
+    // (`MorphoBlueAccount.sol:119-126`, `:129-136`, `:139-145`, `:153-161`) are Blue's own calls
+    // plus the approvals and the `ExactDelta` / `BadReceiver` asserts on the amounts they just
+    // passed; the port's ledger is those amounts, so the asserts cannot fail and the Router calls
+    // Blue's [`VenueMarket::supply_collateral`], [`VenueMarket::withdraw_collateral`],
+    // [`VenueMarket::borrow`] and [`VenueMarket::supply`] directly. `_repay` and `_withdraw` do
+    // carry their own logic and keep their `account_` methods below.
 
     /// `MorphoBlueAccount._repay` (`MorphoBlueAccount.sol:373-390`) with the account holding at
     /// least `assets` (the Router pulls the leg in first): accrue (a revert there is
@@ -273,7 +249,7 @@ impl VenueMarket {
             return Ok(U256::ZERO);
         }
         let owed = self.debt_of(now)?;
-        let pay = min_u(assets, owed);
+        let pay = assets.min(owed);
         if pay.is_zero() {
             return Ok(U256::ZERO);
         }
@@ -291,12 +267,6 @@ impl VenueMarket {
             return Err(FlammError::ExactDelta);
         }
         Ok(repaid)
-    }
-
-    /// `MorphoBlueAccount.supply` (`MorphoBlueAccount.sol:153-161`): Blue's `supply(assets, 0)`;
-    /// returns the minted shares.
-    pub fn account_supply(&mut self, assets: U256, now: u64) -> Result<U256, FlammError> {
-        self.supply(assets, now)
     }
 
     /// `MorphoBlueAccount._withdraw` (`MorphoBlueAccount.sol:392-407`): exactly one of `assets` /

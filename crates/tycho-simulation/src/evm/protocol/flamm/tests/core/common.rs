@@ -603,7 +603,7 @@ pub fn build_state(r: &Reads) -> State {
         fee_cap_wad: p.fee_cap_wad.0,
         share_supply: p.total_supply.0,
         last_lever_spread_ppm: p.last_lever_spread_ppm.0,
-        hooks: PoolHooks { addrs, swap, leverage, spread },
+        hooks: PoolHooks { swap, leverage, spread },
         router,
         feed,
     }
@@ -756,7 +756,6 @@ pub fn diff_state(got: &State, want: &State, skip: &[&str]) -> Vec<String> {
     cmpu!("s.FeeCapWad".into(), g.fee_cap_wad, w.fee_cap_wad);
     cmpu!("s.ShareSupply".into(), g.share_supply, w.share_supply);
     cmpu!("s.LastLeverSpreadPpm".into(), g.last_lever_spread_ppm, w.last_lever_spread_ppm);
-    cmp!("s.Hooks.Addrs".into(), g.hooks.addrs, w.hooks.addrs);
     cmp!("s.Hooks.Swap.Kind".into(), g.hooks.swap.kind, w.hooks.swap.kind);
     match (&g.hooks.swap.everlong_swap, &w.hooks.swap.everlong_swap) {
         (Some(a), Some(b)) => {

@@ -43,12 +43,11 @@ pub const MORPHO_MARKET_SLOT: u64 = 3;
 /// The attribute map of one component, keyed by attribute name.
 pub type Attributes = BTreeMap<String, Bytes>;
 
-/// Why a word could not be read: absent where the value is needed, or malformed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WordError {
-    Missing(String),
-    Malformed(String),
-}
+/// Why a word could not be read: absent where the value is needed, or malformed. Those are the
+/// first two cases of the decoder's own [`DecodeError`](super::decoder::DecodeError), and a
+/// word read is refused as nothing else, so this module reports them in that type instead of
+/// in a second enum a `From` impl has to keep in step with it.
+pub use super::decoder::DecodeError as WordError;
 
 /// `<role>:0x<slot key>`, the attribute name of a raw storage word.
 pub fn word_name(role: &str, slot: U256) -> String {
@@ -128,7 +127,7 @@ pub fn hash_of(name: &str, v: &Bytes) -> Result<B256, WordError> {
 
 /// The words of one component, read by role and slot key.
 pub struct Words<'a> {
-    pub attrs: &'a Attributes,
+    attrs: &'a Attributes,
 }
 
 impl<'a> Words<'a> {
@@ -148,14 +147,6 @@ impl<'a> Words<'a> {
     pub fn required_word(&self, name: &str) -> Result<U256, WordError> {
         self.get_word(name)?
             .ok_or_else(|| WordError::Missing(name.to_owned()))
-    }
-
-    /// A named attribute that must be present, as an address.
-    pub fn required_address(&self, name: &str) -> Result<Address, WordError> {
-        match self.attrs.get(name) {
-            Some(v) => address_of(name, v),
-            None => Err(WordError::Missing(name.to_owned())),
-        }
     }
 
     /// A FLAMM-owned storage word (`<role>:<slot>`): zero when absent, which is a word the
@@ -179,11 +170,6 @@ impl<'a> Words<'a> {
     /// through [`Words::owned`] and a lost one of those still decodes.
     pub fn required_owned(&self, role: &str, slot: U256) -> Result<U256, WordError> {
         self.required_word(&word_name(role, slot))
-    }
-
-    /// An external word (Morpho, IRM) that must be known.
-    pub fn external(&self, name: &str) -> Result<U256, WordError> {
-        self.required_word(name)
     }
 }
 
@@ -359,6 +345,9 @@ mod tests {
                 "hook:0x000000000000000000000000000000000000000000000000000000000000000f".into()
             ))
         );
-        assert_eq!(w.external("mm:0:market:0"), Err(WordError::Missing("mm:0:market:0".into())));
+        assert_eq!(
+            w.required_word("mm:0:market:0"),
+            Err(WordError::Missing("mm:0:market:0".into()))
+        );
     }
 }
