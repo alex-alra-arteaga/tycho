@@ -2,9 +2,23 @@
 
 //! The market's rate model: Morpho's `AdaptiveCurveIrm`
 //! (`0x46415998764C29aB2a25CbeA6254146D50D22687` on Base, the IRM of the c104 venue market
-//! `0x9103c3b4…1836` per Blue's `idToMarketParams`), ported from morpho-org/morpho-blue-irm v1.0.0
-//! (`src/AdaptiveCurveIrm.sol`, `src/libraries/adaptive-curve/ExpLib.sol`, `src/libraries/
-//! adaptive-curve/ConstantsLib.sol`, `src/libraries/MathLib.sol`, `src/libraries/UtilsLib.sol`).
+//! `0x9103c3b4…1836` per Blue's `idToMarketParams`), whose answers this module must reproduce. The
+//! behaviour is specified by morpho-org/morpho-blue-irm v1.0.0 (`src/AdaptiveCurveIrm.sol`,
+//! `src/libraries/adaptive-curve/ExpLib.sol`, `src/libraries/adaptive-curve/ConstantsLib.sol`,
+//! `src/libraries/MathLib.sol`, `src/libraries/UtilsLib.sol`).
+//!
+//!
+//! # Provenance
+//! This is an independent Rust implementation, not a transliteration. FLAMM borrows inside the
+//! fill, so a quote is only correct if it reproduces what these deployed contracts will do, to the
+//! wei and to the revert class — that conformance requirement is why the module exists and why the
+//! comments cite upstream by file and line. Those citations identify the behaviour each function
+//! must agree with; they are not a record of copied text. The arithmetic itself is published
+//! formula, and the expression here is the Rust one: errors propagate as [`FlammError`] through
+//! `Result` rather than reverting, the totals are `U256`/`I256` with named checked helpers, and the
+//! overflow semantics depart from upstream in the places the module documents. Agreement is
+//! established by replaying the deployed bytecode's own answers over the committed fixtures, not by
+//! sharing source.
 //!
 //! The arithmetic is `int256`: `wMulToZero` / `wDivToZero` truncate toward zero (`I256`'s
 //! division), `wExp` decomposes over `ln 2` and shifts a positive `e^r`. Every checked `int256`

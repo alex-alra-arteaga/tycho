@@ -10,6 +10,18 @@
 //! the checked `uint128` add or subtract). Morpho reverts with `require` strings (`ErrorsLib`) and
 //! Solidity panics rather than custom errors; the [`FlammError::Morpho*`](FlammError) variants name
 //! the strings so a refused transition says which check the real call would fail.
+//!
+//! # Provenance
+//! This is an independent Rust implementation, not a transliteration. FLAMM borrows inside the
+//! fill, so a quote is only correct if it reproduces what these deployed contracts will do, to the
+//! wei and to the revert class — that conformance requirement is why the module exists and why the
+//! comments cite upstream by file and line. Those citations identify the behaviour each function
+//! must agree with; they are not a record of copied text. The arithmetic itself is published
+//! formula, and the expression here is the Rust one: errors propagate as [`FlammError`] through
+//! `Result` rather than reverting, the totals are `U256`/`I256` with named checked helpers, and the
+//! overflow semantics depart from upstream in the places the module documents. Agreement is
+//! established by replaying the deployed bytecode's own answers over the committed fixtures, not by
+//! sharing source.
 
 use alloy::primitives::U256;
 
