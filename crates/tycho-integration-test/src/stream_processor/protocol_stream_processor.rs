@@ -244,7 +244,6 @@ impl ProtocolStreamProcessor {
                 "aerodrome_slipstreams".to_string(),
                 "aerodrome_v1".to_string(),
                 "lunarbase".to_string(),
-                "flamm".to_string(),
             ],
             Chain::Bsc => vec![
                 "uniswap_v2".to_string(),
