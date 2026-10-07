@@ -21,8 +21,7 @@ use serde::Deserialize;
 
 use super::common::{
     attest, bool_word, class_tag, decode_reads, e2e_diff, edge_diff, fixture_lines, outcome,
-    outcome_hex, read_fixture, return_words, revert_class, Chain, Report, State, Word, E2E_BLOCKS,
-    EDGE_BLOCKS,
+    outcome_hex, return_words, Chain, Report, State, Word, E2E_BLOCKS, EDGE_BLOCKS,
 };
 use crate::evm::protocol::flamm::{
     state::{FEATURE_LEVERAGE, FEATURE_SWAP_BUY, FEATURE_SWAP_SELL},
@@ -151,8 +150,11 @@ fn replay_e2e_grid(
 #[test]
 fn e2e_preview_grids() {
     // Every revert class the pool's swap and leverage previews can reach on this deployment must
-    // have fired somewhere in the grids (the Go suite's closing check; FeeMismatch /
-    // FillMismatch / PriceUnchecked for loan 0 cannot).
+    // have fired somewhere in the recorded rows (the Go suite's closing check; FeeMismatch /
+    // FillMismatch / PriceUnchecked for loan 0 cannot). That every recorded revert MAPS is not
+    // checked again here: `Report::compare` fails a row whose data classifies to `None` ("unmapped
+    // chain revert") and the sequence replay fails a step the same way, so no row of these
+    // fixtures can pass against unmapped data.
     let mut seen: BTreeMap<String, usize> = Default::default();
     for blk in E2E_BLOCKS {
         let name = format!("core_e2e_grid_{blk}.jsonl.gz");
@@ -164,6 +166,16 @@ fn e2e_preview_grids() {
             *seen
                 .entry(k.split(' ').nth(1).unwrap().to_string())
                 .or_default() += n;
+        }
+    }
+    // The executed sequences' own classes: the deadline, pair, slippage and IRM-outage refusals are
+    // reachable only through `swap` / `leverUp` / `leverDown`, never through a preview grid.
+    for blk in E2E_BLOCKS {
+        for line in fixture_lines(&format!("core_e2e_seq_{blk}.jsonl.gz")) {
+            let st: E2eStep = serde_json::from_str(&line).expect("step");
+            *seen
+                .entry(class_tag(st.e.as_ref()))
+                .or_default() += 1;
         }
     }
     for sel in [
@@ -190,9 +202,16 @@ fn e2e_preview_grids() {
         "0x4e487b71",
         "0x00000000",
         "ok",
+        // the four the sequences alone reach: Expired, InvalidPair, Slippage, IrmUnreadable
+        "0x203d82d8",
+        "0x1e4f7d8c",
+        "0x7dd37f70",
+        "0xa4fe5f8b",
     ] {
-        assert!(seen.contains_key(sel), "no grid row reached {sel}");
+        assert!(seen.contains_key(sel), "no recorded row reached {sel}");
     }
+    // The contracts declare `Unsupported()` but nothing on this deployment reverts with it.
+    assert!(!seen.contains_key("0x90a2caf2"), "a recorded row reverted Unsupported(): {seen:?}");
 }
 
 // ------------------------------------------------------------------ e2e sequences
@@ -1050,50 +1069,4 @@ fn e2e_sequence_sensitivity() {
         assert!(!rep.failures.is_empty(), "perturbing the {tag} changed no step");
         eprintln!("sensitivity {tag}: broke at {}", rep.failures[0]);
     }
-}
-
-/// Every revert class the recorded rows carry is mapped (no row is compared against unmapped
-/// data), and the contracts' own `Unsupported()` never appears on chain.
-#[test]
-fn every_recorded_revert_class_is_mapped() {
-    let mut seen: std::collections::HashSet<FlammError> = Default::default();
-    for blk in E2E_BLOCKS {
-        for line in fixture_lines(&format!("core_e2e_grid_{blk}.jsonl.gz")) {
-            let row: GridRow = serde_json::from_str(&line).expect("row");
-            if let Some(e) = &row.e {
-                let c = revert_class(e).unwrap_or_else(|| panic!("{blk}: unmapped {e}"));
-                seen.insert(c);
-            }
-        }
-        for line in fixture_lines(&format!("core_e2e_seq_{blk}.jsonl.gz")) {
-            let st: E2eStep = serde_json::from_str(&line).expect("step");
-            if let Some(e) = &st.e {
-                let c = revert_class(e).unwrap_or_else(|| panic!("{blk}: unmapped {e}"));
-                seen.insert(c);
-            }
-        }
-    }
-    for want in [
-        FlammError::InvalidAmount,
-        FlammError::Expired,
-        FlammError::InvalidPair,
-        FlammError::Paused,
-        FlammError::FeatureDisabled,
-        FlammError::StalePrice,
-        FlammError::InvalidPrice,
-        FlammError::SequencerDown,
-        FlammError::SequencerGrace,
-        FlammError::PegBroken,
-        FlammError::LevPaused,
-        FlammError::SpreadUnavailable,
-        FlammError::PanicArithmetic,
-        FlammError::PriceBand,
-        FlammError::NothingToFill,
-        FlammError::LevValueLeak,
-        FlammError::MulDivOverflow,
-    ] {
-        assert!(seen.contains(&want), "no recorded row reaches {want:?}");
-    }
-    assert!(!seen.contains(&FlammError::Unsupported));
-    let _ = read_fixture("core_e2e_grid_51302915.jsonl.gz");
 }
