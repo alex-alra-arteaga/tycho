@@ -721,12 +721,13 @@ fn the_real_swap_through_the_stream() {
         .unwrap();
     assert_ne!(again.amount, BigUint::from(11_301_759u32));
     // The lever venue's answer through the stream is the pause, with the venue's gas for the
-    // empty trade.
+    // empty trade. The pause is a property of the pool at this clock, not of the size, so it is
+    // recoverable: the curator's unpause makes the same call succeed.
     let e = client
         .lever()
         .get_amount_out(BigUint::from(15_000u32), &cb, &us)
         .unwrap_err();
-    assert!(matches!(e, SimulationError::InvalidInput(..)), "{e}");
+    assert!(matches!(e, SimulationError::RecoverableError(..)), "{e}");
     assert!(e.to_string().contains("LevPaused"), "{e}");
     assert_eq!(
         client

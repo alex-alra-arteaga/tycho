@@ -2,7 +2,7 @@
 
 //! Wei-exact port of the frozen c1 leverage curve `CollRebalancerMath`
 //! (`src/hooks/everlong/lev/CollRebalancerMath.sol` @ c104 `80abd43`, linked on Base at
-//! `0xC002d0731E6a2E6e80Be754779bCEf6B01Aff0bb`) and its `LevCurveTypes` tuple.
+//! `0xc002d0731e6A2E6e80bE754779BCef6B01aFF0BB`) and its `LevCurveTypes` tuple.
 //!
 //! Every quantity is a `U256` and every step keeps Solidity's operation order: `/` and
 //! `Math.mulDiv` floor, `Math.Rounding.Up` ceils, `Math.sqrt` floors and `Mul512.productGt`

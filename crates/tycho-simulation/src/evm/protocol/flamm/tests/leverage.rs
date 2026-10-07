@@ -150,7 +150,7 @@ fn assert_no_mismatches(mismatches: &[String], limit: usize) {
 // ------------------------------------------------------------------ the deployed library on a fork
 
 const FIXTURE: &str = "lev_curve_fork_fixture.json.gz";
-const MATH: &str = "0xC002d0731E6a2E6e80Be754779bCEf6B01Aff0bb";
+const MATH: &str = "0xc002d0731e6A2E6e80bE754779BCef6B01aFF0BB";
 
 /// `testdata/lev_curve_fork_fixture.json.gz`: a `leverageQuote` / `deleverageQuote` /
 /// `anchorAndBase` / `isStateSafe` grid plus a keccak-seeded sweep called on the deployed
@@ -686,11 +686,14 @@ fn div_ceil(x: U256, y: U256) -> U256 {
     }
 }
 
-/// Replays every captured row and returns the number of (fills, reverts) compared.
-fn check_hook_rows(fx: &HookFixture) -> (usize, usize) {
-    let (mut fills, mut reverts) = (0, 0);
+/// Replays every captured row and returns the number of (fills, reverts, uncaptured) rows. A row
+/// the generator could not capture carries no context to compare, so it is skipped; the count is
+/// returned because `fills + reverts` is the compared total and is smaller than `rows.len()`.
+fn check_hook_rows(fx: &HookFixture) -> (usize, usize, usize) {
+    let (mut fills, mut reverts, mut skipped) = (0, 0, 0);
     for (i, r) in fx.rows.iter().enumerate() {
         if !set(r, "captured") {
+            skipped += 1;
             continue;
         }
         let scenario = fx
@@ -751,14 +754,17 @@ fn check_hook_rows(fx: &HookFixture) -> (usize, usize) {
             }
         }
     }
-    (fills, reverts)
+    (fills, reverts, skipped)
 }
 
 #[test]
 fn lev_hook_local_fixture() {
     let fx = load_hook_fixture(LOCAL_FIXTURE);
-    let (fills, reverts) = check_hook_rows(&fx);
-    eprintln!("{} rows: {fills} fills and {reverts} reverts matched", fx.rows.len());
+    let (fills, reverts, skipped) = check_hook_rows(&fx);
+    eprintln!("{} rows: {fills} fills, {reverts} reverts, {skipped} uncaptured", fx.rows.len());
+    assert_eq!(fills + reverts + skipped, fx.rows.len());
+    // The local generator captures every row it emits.
+    assert_eq!(skipped, 0);
     assert!(fills > 50);
     assert!(reverts > 10);
 }
@@ -844,8 +850,13 @@ fn lev_fixture_digests() {
 fn lev_hook_fork_fixture() {
     let fx = load_hook_fixture(FORK_FIXTURE);
     assert_eq!(fx.block, 51_317_000);
-    let (fills, reverts) = check_hook_rows(&fx);
-    eprintln!("{} rows: {fills} fills and {reverts} reverts matched", fx.rows.len());
+    let (fills, reverts, skipped) = check_hook_rows(&fx);
+    eprintln!("{} rows: {fills} fills, {reverts} reverts, {skipped} uncaptured", fx.rows.len());
+    assert_eq!(fills + reverts + skipped, fx.rows.len());
+    // 19 of the fork fixture's 402 rows are states the generator could not capture on the fork;
+    // pinned so a regeneration that stops capturing rows is noticed rather than silently
+    // shrinking the comparison.
+    assert_eq!(skipped, 19);
     assert!(fills > 150);
     assert!(reverts > 100);
 }
