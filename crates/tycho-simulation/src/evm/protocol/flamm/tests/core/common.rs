@@ -13,7 +13,7 @@ use std::str::FromStr;
 use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Deserializer};
 
-pub use super::super::fixtures::{fixture_lines, read_fixture};
+pub use super::super::fixtures::fixture_lines;
 use crate::evm::protocol::flamm::{
     almcurve::Support,
     deps::EverlongLeverageV1,
@@ -32,8 +32,11 @@ use crate::evm::protocol::flamm::{
 
 pub type State = Flamm;
 
-pub const E2E_BLOCKS: &[&str] = &["51302915", "51313000", "51324800"];
-pub const EDGE_BLOCKS: &[&str] = &["51302915", "51324800", "51326000"];
+/// The recorded blocks replayed here; the generators also fork 51324800 for the e2e set and
+/// 51326000 for the edge set, whose outputs are near-clones with no unique outcome
+/// (`testdata/README.md`).
+pub const E2E_BLOCKS: &[&str] = &["51302915", "51313000"];
+pub const EDGE_BLOCKS: &[&str] = &["51302915", "51324800"];
 
 /// A 256-bit word as the fixtures carry it: a decimal string (the e2e dumps) or a JSON number of
 /// any width (the edge dumps); a negative decimal is an `int256` and reads as its two's-complement
