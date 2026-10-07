@@ -16,7 +16,6 @@
 use alloy::primitives::{Address, U256};
 
 use super::{
-    error::FlammError,
     math::mul_div,
     pricefeed::FeedRound,
     words::{address_of, field, field_u64, word_of, Attributes, WordError},
@@ -341,7 +340,7 @@ impl Feed {
         }
         match mul_div(scale_factor, r.answer, U256::from(1u8)) {
             Ok(p) => Ok((!p.is_zero(), p, p.is_zero())),
-            Err(FlammError::MulDivOverflow) => Ok((false, U256::ZERO, false)),
+            // Any refusal of the product is the reverting read: `Math.mulDiv`'s bare require.
             Err(_) => Ok((false, U256::ZERO, false)),
         }
     }
