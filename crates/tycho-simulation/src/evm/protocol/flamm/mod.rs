@@ -20,8 +20,10 @@
 //! one reserve or are mutually exclusive, and the defect is price rather than capacity, so derating
 //! each venue's limit would not make a split safe. Until such a primitive exists, a solver must
 //! treat the two components as alternatives: quote both, take the better one, use one per solution.
-//! Both are already `skip_simulation` and `skip_execution` in the package's integration tests, so
-//! nothing in the shipped test surface exercises a split.
+//! The package's integration tests do not exercise a split: the lever-up component is
+//! `skip_simulation` and `skip_execution` in both ranges (the swap component is simulated and
+//! executed in the second), and the harness quotes and executes one component at a time
+//! (`protocols/testing/src/test_runner.rs`, `run_simulation`).
 //!
 //! # State sourcing
 //!
