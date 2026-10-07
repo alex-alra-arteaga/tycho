@@ -64,7 +64,7 @@ const USDC: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 
 /// A `0x` hex value as bytes; an odd digit count (the snapshot's balances, `0x3591f`) is
 /// left-padded with a zero nibble.
-fn bytes(hex: &str) -> Bytes {
+pub(super) fn bytes(hex: &str) -> Bytes {
     let digits = hex.strip_prefix("0x").unwrap_or(hex);
     let padded = if digits.len() % 2 == 1 { format!("0x0{digits}") } else { format!("0x{digits}") };
     Bytes::from_str(&padded).unwrap_or_else(|e| panic!("{hex}: {e}"))
@@ -74,11 +74,11 @@ fn token(addr: &str, symbol: &str, decimals: u32) -> Token {
     Token::new(&bytes(addr), symbol, decimals, 0, &[Some(100_000)], Chain::Base, 100)
 }
 
-fn cbbtc() -> Token {
+pub(super) fn cbbtc() -> Token {
     token(CBBTC, "cbBTC", 8)
 }
 
-fn usdc() -> Token {
+pub(super) fn usdc() -> Token {
     token(USDC, "USDC", 6)
 }
 
@@ -182,7 +182,7 @@ fn decoded(snap: &Snapshot, i: usize) -> FlammPoolState {
 
 /// The recorded outcome of one `previewSwap` / `previewLever` row: the return words, or the
 /// revert class.
-fn recorded(row: &Value) -> Result<Vec<U256>, Option<FlammError>> {
+pub(super) fn recorded(row: &Value) -> Result<Vec<U256>, Option<FlammError>> {
     if row["ok"].as_bool().unwrap() {
         let h = s(row, "ret");
         let b = hex::decode(h.trim_start_matches("0x")).unwrap();
@@ -194,7 +194,7 @@ fn recorded(row: &Value) -> Result<Vec<U256>, Option<FlammError>> {
     }
 }
 
-fn amount(row: &Value) -> U256 {
+pub(super) fn amount(row: &Value) -> U256 {
     U256::from_str_radix(s(row, "amount_in"), 10).unwrap()
 }
 
@@ -234,6 +234,116 @@ pub(super) fn refused_quote(
         }
         false
     }
+}
+
+/// Every recorded `previewSwap` row of one grid against the swap venue at the block's own clock:
+/// the preview words or the refusal class, and the quote semantics per row — a size the pool
+/// fills in full is quoted with the recorded output and the direction's gas, on a new state the
+/// fill moved and whose clock it did not; a size it clips is refused as a partial fill; a size it
+/// reverts is the typed refusal above the venue's limit and the empty trade, dust, at or below
+/// it. Then the venue's limit at the recorded edge, with the recorded output at it and a refusal
+/// one unit past it — or, where the grid records no filling size at all (a paused pool), no limit
+/// either. Returns `(rows, full fills, dust)`.
+pub(super) fn check_swap_grid(
+    state: &FlammPoolState,
+    grids: &Value,
+    block: u64,
+    now: u64,
+) -> (usize, usize, usize) {
+    let (cb, us) = (cbbtc(), usdc());
+    let flamm = state
+        .flamm()
+        .unwrap_or_else(|| panic!("block {block}: {:?}", state.core().err()));
+    let (mut rows, mut full, mut dust) = (0usize, 0usize, 0usize);
+    for (dir, key) in [(true, "swap_sell"), (false, "swap_buy")] {
+        let (tin, tout) = if dir { (&cb, &us) } else { (&us, &cb) };
+        let limit = state
+            .get_limits(tin.address.clone(), tout.address.clone())
+            .map_or(U256::ZERO, |_| limit_of(state, tin, tout));
+        for row in grids[key].as_array().unwrap() {
+            rows += 1;
+            let a = amount(row);
+            let chain = recorded(row);
+            let ctx = format!("block {block} {key} {a}");
+            let got = flamm.preview_swap(dir, a, now);
+            match (&chain, &got) {
+                (Ok(words), Ok(p)) => {
+                    assert_eq!(words[0], p.used_native, "{ctx}: amountInUsed");
+                    assert_eq!(words[1], p.net_native, "{ctx}: amountOut");
+                    assert_eq!(words[2], p.fee_wad, "{ctx}: feeWad");
+                }
+                (Err(Some(want)), Err(e)) => assert_eq!(want, e, "{ctx}: revert class"),
+                (Err(None), _) => panic!("{ctx}: unmapped revert data {}", s(row, "revert")),
+                _ => panic!("{ctx}: chain {chain:?}, port {got:?}"),
+            }
+            let quote = state.get_amount_out(u256_to_biguint(a), tin, tout);
+            match &chain {
+                Ok(words) if words[0] == a => {
+                    let q = quote.unwrap_or_else(|e| panic!("{ctx}: full fill refused: {e}"));
+                    assert_eq!(q.amount, u256_to_biguint(words[1]), "{ctx}: amount out");
+                    // Exactly the direction's constant: the pool's dearer paths (the cap
+                    // bisection, a second funding pass) only run where it clips the input,
+                    // and a clipped input is not a quote.
+                    assert_eq!(
+                        q.gas,
+                        BigUint::from(if dir { GAS_SWAP_SELL } else { GAS_SWAP_BUY }),
+                        "{ctx}: gas"
+                    );
+                    let next = q
+                        .new_state
+                        .as_any()
+                        .downcast_ref::<FlammPoolState>()
+                        .unwrap();
+                    assert_ne!(next.flamm(), state.flamm(), "{ctx}: the fill moved the pool");
+                    assert_eq!(next.clock(), state.clock());
+                    full += 1;
+                }
+                Ok(_) => {
+                    let e = quote
+                        .err()
+                        .unwrap_or_else(|| panic!("{ctx}: a clipped fill was quoted"));
+                    assert!(e.to_string().contains("partial fill"), "{ctx}: {e}");
+                }
+                Err(want) => {
+                    let want = want.as_ref().map(|w| w.to_string());
+                    if refused_quote(quote, state, a, limit, want.as_deref(), &ctx) {
+                        assert!(!dir, "{ctx}: a sell is never dust");
+                        dust += 1;
+                    }
+                }
+            }
+        }
+    }
+    for (key, edge, tin, tout) in
+        [("swap_sell", "sell_edge", &cb, &us), ("swap_buy", "buy_edge", &us, &cb)]
+    {
+        let Some(want) = grids[edge].as_str() else {
+            // No size fills (the pool is paused): no limit either.
+            let limits = state.get_limits(tin.address.clone(), tout.address.clone());
+            assert!(
+                matches!(&limits, Ok((a, _)) if a == &BigUint::ZERO) || limits.is_err(),
+                "block {block} {edge}: {limits:?}"
+            );
+            continue;
+        };
+        let want = U256::from_str_radix(want, 10).unwrap();
+        let want_out = grids[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| amount(r) == want)
+            .map(|r| recorded(r).unwrap()[1])
+            .unwrap();
+        let (a, out) = state
+            .get_limits(tin.address.clone(), tout.address.clone())
+            .unwrap();
+        assert_eq!(a, u256_to_biguint(want), "block {block} {edge}");
+        assert_eq!(out, u256_to_biguint(want_out), "block {block} {edge} out");
+        assert!(state
+            .get_amount_out(a.clone() + BigUint::from(1u8), tin, tout)
+            .is_err());
+    }
+    (rows, full, dust)
 }
 
 #[test]
@@ -287,72 +397,11 @@ fn decoded_state_is_the_fixture_state() {
 /// recorded output and the venue's gas, a size it clips or refuses is not quoted.
 #[test]
 fn previews_reproduce_the_chain_at_every_pinned_block() {
-    let (cb, us) = (cbbtc(), usdc());
-    let mut rows = 0usize;
-    let mut full = 0usize;
-    let mut dust = 0usize;
+    let (mut rows, mut full, mut dust) = (0usize, 0usize, 0usize);
     for &block in SNAPSHOT_BLOCKS {
         let snap = Snapshot::load(block);
-        let state = decoded(&snap, 0);
-        let flamm = state.flamm().unwrap();
-        let now = snap.timestamp();
-        for (dir, key) in [(true, "swap_sell"), (false, "swap_buy")] {
-            let (tin, tout) = if dir { (&cb, &us) } else { (&us, &cb) };
-            let limit = limit_of(&state, tin, tout);
-            for row in snap.grids()[key].as_array().unwrap() {
-                rows += 1;
-                let a = amount(row);
-                let chain = recorded(row);
-                let ctx = format!("block {block} {key} {a}");
-                let got = flamm.preview_swap(dir, a, now);
-                match (&chain, &got) {
-                    (Ok(words), Ok(p)) => {
-                        assert_eq!(words[0], p.used_native, "{ctx}: amountInUsed");
-                        assert_eq!(words[1], p.net_native, "{ctx}: amountOut");
-                        assert_eq!(words[2], p.fee_wad, "{ctx}: feeWad");
-                    }
-                    (Err(Some(want)), Err(e)) => assert_eq!(want, e, "{ctx}: revert class"),
-                    (Err(None), _) => panic!("{ctx}: unmapped revert data {}", s(row, "revert")),
-                    _ => panic!("{ctx}: chain {chain:?}, port {got:?}"),
-                }
-                let quote = state.get_amount_out(u256_to_biguint(a), tin, tout);
-                match &chain {
-                    Ok(words) if words[0] == a => {
-                        let q = quote.unwrap_or_else(|e| panic!("{ctx}: full fill refused: {e}"));
-                        assert_eq!(q.amount, u256_to_biguint(words[1]), "{ctx}: amount out");
-                        // Exactly the direction's constant: the pool's dearer paths (the cap
-                        // bisection, a second funding pass) only run where it clips the input,
-                        // and a clipped input is not a quote.
-                        assert_eq!(
-                            q.gas,
-                            BigUint::from(if dir { GAS_SWAP_SELL } else { GAS_SWAP_BUY }),
-                            "{ctx}: gas"
-                        );
-                        let next = q
-                            .new_state
-                            .as_any()
-                            .downcast_ref::<FlammPoolState>()
-                            .unwrap();
-                        assert_ne!(next.flamm(), state.flamm(), "{ctx}: the fill moved the pool");
-                        assert_eq!(next.clock(), state.clock());
-                        full += 1;
-                    }
-                    Ok(_) => {
-                        let e = quote
-                            .err()
-                            .unwrap_or_else(|| panic!("{ctx}: a clipped fill was quoted"));
-                        assert!(e.to_string().contains("partial fill"), "{ctx}: {e}");
-                    }
-                    Err(want) => {
-                        let want = want.as_ref().map(|w| w.to_string());
-                        if refused_quote(quote, &state, a, limit, want.as_deref(), &ctx) {
-                            assert!(!dir, "{ctx}: a sell is never dust");
-                            dust += 1;
-                        }
-                    }
-                }
-            }
-        }
+        let (r, f, d) = check_swap_grid(&decoded(&snap, 0), snap.grids(), block, snap.timestamp());
+        (rows, full, dust) = (rows + r, full + f, dust + d);
     }
     assert!(
         rows > 150 * SNAPSHOT_BLOCKS.len() &&
@@ -2137,27 +2186,16 @@ fn the_buy_limit_is_the_traits_soft_limit() {
 /// property of the size asked for is `InvalidInput` (`SimulationError`: the first says retrying
 /// later may succeed, the second says the input was bad). The pause bits, the feature mask, the
 /// peg band, the feeds, the spread's age and the pool's fee floor are the first kind; the caps,
-/// the band and a partial fill are the second.
+/// the band and a partial fill are the second. The three gate bits are classified here by
+/// `fee_and_spot_refuse_what_the_gate_refuses`, which asserts the same `RecoverableError` on
+/// `get_amount_out` at every pinned block; what this test adds is the fee floor (which is the
+/// pool's state although it refuses both directions at every size), the clipped size, and the
+/// lever venue's direction-versus-pause split.
 #[test]
 fn pool_reverts_are_classified_by_what_causes_them() {
     let (cb, us) = (cbbtc(), usdc());
     let snap = Snapshot::load(51_302_915);
     let live = decoded(&snap, 0);
-    let recoverable: [(&str, Perturb); 3] = [
-        ("paused", Box::new(|f| f.paused = true)),
-        ("FEATURE_SWAP_SELL", Box::new(|f| f.pool.features &= !FEATURE_SWAP_SELL)),
-        ("pegBroken", Box::new(|f| f.feed.loans[0].peg_band_wad = U256::from(1u8))),
-    ];
-    for (what, shut) in recoverable {
-        let mut f = live.flamm().unwrap().clone();
-        shut(&mut f);
-        let e = live
-            .clone()
-            .with_flamm(f)
-            .get_amount_out(BigUint::from(20_000u32), &cb, &us)
-            .unwrap_err();
-        assert!(matches!(e, SimulationError::RecoverableError(..)), "{what}: {e}");
-    }
     // A fee floor above anything the fee law can answer refuses BOTH directions at every size:
     // the law reads the direction and the book, never the size (`swap_fee_wad`). It is therefore
     // the pool's state, and the two readers agree about which half of the split it belongs to.
