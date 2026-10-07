@@ -951,6 +951,15 @@ impl ProtocolSim for FlammPoolState {
         for (name, value) in delta.updated_attributes {
             match name.as_str() {
                 "block_number" => {
+                    // `u64::from(Bytes)` indexes `8 - len`, so a wider value panics rather than
+                    // refusing. Every other value this module takes is a raw 32-byte word, which
+                    // makes a 32-byte `block_number` the likeliest producer mistake.
+                    if value.len() > 8 {
+                        return Err(TransitionError::DecodeError(format!(
+                            "flamm: block_number is {} bytes, expected at most 8",
+                            value.len()
+                        )));
+                    }
                     self.block = u64::from(value);
                 }
                 "block_timestamp" => {}
