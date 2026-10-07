@@ -10,7 +10,8 @@ against, all `eth_call` at the snapshot block (block.timestamp = the snapshot's)
     procedure the Rust `get_limits` runs (doubling from 1 until a size is refused or clipped, then bisection),
     with every probe recorded as a grid row;
   - `grids.lever_up` / `grids.lever_down`: `pool.previewLever(up, amountIn)` on a few sizes (LevPaused on chain
-    at every pinned block);
+    at all three blocks this script snapshots, so every row is a refusal and there is no lever edge to locate;
+    the end-to-end recorder, fetch.py, also runs `lever_edge` at its pinned blocks);
   - `grids.spot`: `EverlongHook.spot(PoolContext)` (the argument is ignored on chain).
 
 Usage: python3 grids.py <block>...  (reads out/schema/<block>.json, writes out/grids/<block>.json)
@@ -99,25 +100,43 @@ class Prober:
         words = R.dec_words(row["ret"])
         return len(words) == 3 and words[0] == amount
 
-    def edge(self, pool_asset_in):
+    def lever_full(self, up, amount):
+        """The size fills in full: previewLever answered and amountInUsed == amountIn."""
+        row = self.lever(up, amount)
+        if not row["ok"]:
+            return False
+        words = R.dec_words(row["ret"])
+        return len(words) == 4 and words[0] == amount
+
+    def _edge(self, full):
         """Doubling from 1 to the first size that fills in full, doubling on to the first that does not, then
-        bisection; every probe is a recorded row. None when no size up to 2^128 fills."""
+        bisection; every probe is a recorded row. None when no size up to 2^128 fills. This is the procedure
+        the Rust `get_limits` runs (`sim.rs::limit`), over whichever preview `full` asks."""
         a = 1
-        while a < (1 << 128) and not self.full(pool_asset_in, a):
+        while a < (1 << 128) and not full(a):
             a <<= 1
         if a >= (1 << 128):
             return None
         lo = a
         hi = a << 1
-        while hi < (1 << 200) and self.full(pool_asset_in, hi):
+        while hi < (1 << 200) and full(hi):
             lo, hi = hi, hi << 1
         while hi - lo > 1:
             mid = (lo + hi) >> 1
-            if self.full(pool_asset_in, mid):
+            if full(mid):
                 lo = mid
             else:
                 hi = mid
         return lo
+
+    def edge(self, pool_asset_in):
+        """The largest fully consumed `previewSwap` size in a direction (`_edge`)."""
+        return self._edge(lambda a: self.full(pool_asset_in, a))
+
+    def lever_edge(self, up=True):
+        """The largest fully consumed `previewLever` size in a direction (`_edge`): what the lever-up venue's
+        `get_limits` answers, the pool asset in."""
+        return self._edge(lambda a: self.lever_full(up, a))
 
 
 def log_grid(max_exp):

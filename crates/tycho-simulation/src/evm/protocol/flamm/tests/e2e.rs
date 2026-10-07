@@ -4,9 +4,10 @@
 //! (`testdata/snapshots/e2e_stream.json.gz`) is the package's own output over real Base blocks
 //! (the pool's deployments, creation, activation, every swap it has settled, two of its
 //! deposits, a withdrawal, a keeper recenter, the range test's stop blocks, three recent blocks
-//! carrying Chainlink rounds and the block that unpaused leverage; the pool's other deposits,
-//! withdrawals and keeper transactions reach the fold through the synthetic catch-up blocks
-//! between them), folded as the indexer holds it and as the client delivers it
+//! carrying Chainlink rounds, the block that unpaused leverage, the block that cleared the
+//! spread's staleness window and a later block at which the lever-up venue quotes; the pool's
+//! other deposits, withdrawals and keeper transactions reach the fold through the synthetic
+//! catch-up blocks between them), folded as the indexer holds it and as the client delivers it
 //! (`protocols/substreams/base-flamm/src/e2e_tests.rs`, which asserts the fixture equals what
 //! the package emits). Here the blocks are replayed as the stream decoder would: the components
 //! created in a block are decoded from their snapshot at that block's header, every later block
@@ -14,9 +15,10 @@
 //! block's clock. At the pinned blocks the quotes are compared with the chain's own
 //! `previewSwap` / `previewLever` answers recorded by `eth_call` at those blocks
 //! (`testdata/snapshots/e2e_grids.json.gz`): the same words for every size of a log-spaced grid
-//! and at the largest fully consumed size per direction, the same refusal class where the pool
-//! reverts. Every swap the pool has settled is quoted from the parent block's state at the swap
-//! block's clock and must return exactly the amount the receipt records.
+//! and at the largest fully consumed size per direction (the swap venue at every pinned block,
+//! the lever-up venue at the two after the spread's age was cleared), the same refusal class
+//! where the pool reverts. Every swap the pool has settled is quoted from the parent block's state
+//! at the swap block's clock and must return exactly the amount the receipt records.
 
 use std::{collections::HashMap, str::FromStr};
 
@@ -58,12 +60,19 @@ const USDC: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 const CREATION_BLOCK: u64 = 51_154_990;
 const ACTIVATION_BLOCK: u64 = 51_298_416;
 /// `LevPauseSet(false)`, the curator Safe calling `FLAMM.setLevPaused(false)`: leverage is paused
-/// from the creation until this block. The keeper has never re-posted a spread
-/// (`LeverageSpreadHook.setSpread`; the hook has emitted no `SpreadSet`), so
-/// the constructor's spread aged past `maxSpreadAge` an hour after the creation and every
-/// lever-up since refuses `SpreadUnavailable` (`FLAMMLeverLib.sol:167`) whether paused or not;
-/// a lever-down refuses on its own checks (`NothingToFill`, `PriceBand`).
+/// from the creation until this block.
 const LEV_UNPAUSE_BLOCK: u64 = 51_433_699;
+/// `MaxSpreadAgeSet(0)` on the `LeverageSpreadHook`
+/// (tx 0x441839955de1f9bafe77eaaa96a8ba36517ae1c357c218a0f7919e516d22bdd1, 2026-09-22): the
+/// curator cleared `maxSpreadAge`, the one word of the hook's slot 0 that moved (3600 -> 0;
+/// `spread` stayed at the constructor's 17500 ppm and `lastSetTs` at the creation). Below this
+/// block the keeper had never re-posted a spread (`LeverageSpreadHook.setSpread`; the hook has
+/// emitted no `SpreadSet`), so the constructor's post aged out an hour after the creation and
+/// every lever-up refused `SpreadUnavailable` (`FLAMMLeverLib.sol:167`) whether paused or not.
+/// From this block the same post no longer lapses (`state.rs::spread_ppm` mirrors
+/// `LeverageSpreadHook.sol:76-78`: an age of zero never goes stale) and the lever-up venue
+/// quotes. A lever-down still refuses on its own checks (`NothingToFill`, `PriceBand`).
+const SPREAD_AGE_CLEARED_BLOCK: u64 = 51_649_706;
 /// The stop blocks of `integration_test.tycho.yaml`'s two tests.
 const STOP_BLOCKS: [u64; 2] = [51_155_010, 51_302_920];
 /// Base's block time, what the stream decoder adds to a confirmed header's timestamp to reach
@@ -291,8 +300,9 @@ fn amount(row: &Value) -> U256 {
 /// `eth_call` at the block ran with): the preview words or the refusal class, the quote
 /// semantics per row (a full fill is quoted with the recorded output, a clipped size is
 /// refused, a reverting size is refused above the limit and is the empty trade, dust, at or
-/// below it), the limits at the recorded edges, the hook's spot, and the lever venue's
-/// refusals. Returns `(rows, full fills)`.
+/// below it), the limits at the recorded edges, the hook's spot, and the lever venue row by row:
+/// its recorded refusals below `SPREAD_AGE_CLEARED_BLOCK` and its recorded quote and edge from
+/// there. Returns `(swap rows, full fills)`.
 fn check_grids(
     swap: &FlammPoolState,
     lever: &FlammPoolState,
@@ -387,28 +397,80 @@ fn check_grids(
     if let Ok(words) = spot {
         assert_eq!(flamm.hooks.swap.port().unwrap().spot(), Ok(words[0]), "block {block}: spot");
     }
-    // The lever venue: paused on chain until 51433699 and without a live spread after, every
-    // preview reverts with the recorded class and nothing is quoted.
+    // The lever venue, every row replayed as recorded: the preview words where the chain
+    // answered, the recorded refusal class where it did not. Leverage is paused on chain until
+    // 51433699 and the spread stayed lapsed after it, so every row below
+    // `SPREAD_AGE_CLEARED_BLOCK` is a refusal; from that block the venue quotes.
     let lev = lever.flamm().unwrap();
     assert_eq!(lev.lev_paused, block < LEV_UNPAUSE_BLOCK, "block {block}");
+    let mut lever_fills = 0usize;
     for (up, key) in [(true, "lever_up"), (false, "lever_down")] {
         for row in grids[key].as_array().unwrap() {
             let a = amount(row);
-            let want = recorded(row)
-                .unwrap_err()
-                .unwrap_or_else(|| panic!("block {block} {key} {a}: unmapped revert"));
-            assert_eq!(lev.preview_lever(up, a, now), Err(want), "block {block} {key} {a}");
+            let ctx = format!("block {block} {key} {a}");
+            match recorded(row) {
+                Ok(words) => {
+                    let got = lev
+                        .preview_lever(up, a, now)
+                        .unwrap_or_else(|e| {
+                            panic!("{ctx}: the chain answered, the port refused: {e}")
+                        });
+                    assert_eq!(
+                        [got.amount_in_used, got.amount_out, got.spread_ppm, got.cr_after_wad],
+                        words[..],
+                        "{ctx}: (amountInUsed, amountOut, spreadPpm, crAfterWad)"
+                    );
+                    lever_fills += usize::from(up && got.amount_in_used == a);
+                }
+                Err(want) => {
+                    let want = want.unwrap_or_else(|| panic!("{ctx}: unmapped revert"));
+                    assert_eq!(lev.preview_lever(up, a, now), Err(want), "{ctx}");
+                }
+            }
         }
     }
-    assert!(lever
-        .get_amount_out(BigUint::from(15_000u32), &cb, &us)
-        .is_err());
+    // The venue fills exactly from the block the curator cleared the spread's age, and its limit
+    // is the recorded edge: the same doubling-then-bisection the port's `get_limits` runs.
     assert_eq!(
-        lever
-            .get_limits(cb.address.clone(), us.address.clone())
-            .unwrap(),
-        (BigUint::ZERO, BigUint::ZERO)
+        lever_fills > 0,
+        block >= SPREAD_AGE_CLEARED_BLOCK,
+        "block {block}: {lever_fills} lever-up full fills"
     );
+    let limits = lever
+        .get_limits(cb.address.clone(), us.address.clone())
+        .unwrap();
+    match grids["lever_edge"].as_str() {
+        None => {
+            assert!(lever
+                .get_amount_out(BigUint::from(15_000u32), &cb, &us)
+                .is_err());
+            assert_eq!(limits, (BigUint::ZERO, BigUint::ZERO), "block {block}: lever limits");
+        }
+        Some(edge) => {
+            let want = U256::from_str_radix(edge, 10).unwrap();
+            let out_of = |a: U256| {
+                grids["lever_up"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| amount(r) == a)
+                    .map(|r| recorded(r).unwrap()[1])
+                    .unwrap_or_else(|| panic!("block {block}: {a} is not a recorded lever_up row"))
+            };
+            assert_eq!(limits.0, u256_to_biguint(want), "block {block} lever_edge");
+            assert_eq!(limits.1, u256_to_biguint(out_of(want)), "block {block} lever_edge out");
+            assert!(lever
+                .get_amount_out(limits.0.clone() + BigUint::from(1u8), &cb, &us)
+                .is_err());
+            // A size inside the edge is quoted with the chain's own output.
+            let probe = U256::from(15_000u32);
+            let q = lever
+                .get_amount_out(u256_to_biguint(probe), &cb, &us)
+                .unwrap_or_else(|e| panic!("block {block}: lever-up 15000 refused: {e}"));
+            assert_eq!(q.amount, u256_to_biguint(out_of(probe)), "block {block}: lever-up 15000");
+            assert!(q.gas >= BigUint::from(GAS_LEVER_UP), "block {block}: lever-up gas {}", q.gas);
+        }
+    }
     (rows, full)
 }
 
@@ -592,7 +654,7 @@ fn stream_replays_into_exact_quotes() {
     assert_eq!(checked_swaps, swaps.len());
     assert!(checked_swaps >= 6, "{checked_swaps} swaps");
     assert!(
-        pinned >= 11 && rows > 2000 && full > 1000,
+        pinned >= 13 && rows > 2500 && full > 1400,
         "{pinned} pinned blocks, {rows} rows, {full} full fills"
     );
 }
