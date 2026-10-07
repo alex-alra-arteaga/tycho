@@ -1480,6 +1480,39 @@ fn deltas_rotate_refuse_and_recover() {
     assert_eq!(state.flamm(), before.flamm());
 }
 
+/// `block_number` is the one attribute `delta_transition` reads as a number rather than a word, and
+/// `u64::from(Bytes)` indexes `8 - len`, so a wider value would panic instead of refusing. Every
+/// other value this module takes is a raw 32-byte word, which makes a 32-byte `block_number` the
+/// likeliest producer mistake; it must be a `TransitionError` like any other malformed width.
+#[test]
+fn a_block_number_wider_than_eight_bytes_is_a_transition_error() {
+    let snap = Snapshot::load(51_313_000);
+    let mut state = decoded(&snap, 0);
+    let before = state.block();
+    let id = state.id().to_string();
+    let delta = |bytes: Vec<u8>| ProtocolStateDelta {
+        component_id: id.clone(),
+        updated_attributes: HashMap::from([("block_number".to_owned(), Bytes::from(bytes))]),
+        deleted_attributes: Default::default(),
+    };
+
+    let err = state
+        .delta_transition(delta(vec![0u8; 32]), &HashMap::new(), &Balances::default())
+        .expect_err("a 32-byte block_number must refuse, not panic");
+    assert!(format!("{err:?}").contains("block_number is 32 bytes"), "unexpected error: {err:?}");
+    assert_eq!(state.block(), before, "a refused delta leaves the clock alone");
+
+    // Eight bytes is the width the house decoder emits, and it still applies.
+    state
+        .delta_transition(
+            delta(777u64.to_be_bytes().to_vec()),
+            &HashMap::new(),
+            &Balances::default(),
+        )
+        .unwrap();
+    assert_eq!(state.block(), 777);
+}
+
 /// A pending implementation upgrade makes the pool refuse once its `executableAt` is reached,
 /// and a beacon upgrade that executed refuses on the implementation pin.
 #[test]
