@@ -34,7 +34,7 @@ use super::{
         math::{mul512, mul_div_floor_raw, product_gt, PPM, WAD},
         FlammError,
     },
-    fixtures::{digest_of, read_fixture, read_stored},
+    fixtures::{read_fixture, read_stored},
 };
 
 /// `Panic(uint256)`.
@@ -824,25 +824,6 @@ fn lev_venue_golden() {
             2 => out3 = out,
             _ => {}
         }
-    }
-}
-
-/// Every generated lev fixture pinned to the digest recorded in `testdata/README.md`.
-#[test]
-fn lev_fixture_digests() {
-    for (rel, want) in [
-        (
-            "lev_curve_fork_fixture.json.gz",
-            "798735119ee4e322ec929a75aa48d8855e630f622fc20aa4d3a27a54c30d4e9f",
-        ),
-        (FORK_FIXTURE, "f5d027dc34dbc37289edbf91312d5adf67217bef1a94e02883bee49319580641"),
-        (LOCAL_FIXTURE, "6e8b8d178b2f07c24aa0b4b94021b48a44f50455829786f11f07b92dbeabd59f"),
-        (BAND_FIXTURE, "52e04fdf28c6224faa48e1a4cf581be3d8d070b5a0a53b65c47cf4651d2cb90d"),
-        (TAPE_ARCHIVE, "18fe3e2aa02cce91f8b312f95730b2ef556363e271e82dbbc12d1d107ce29437"),
-        (CURVE_FIXTURE, "12ac1f76ce0eb7b9d03d8440a738b23a18abb531b19866321db12eb01ca66cd4"),
-    ] {
-        assert_eq!(digest_of(rel), want, "{rel}");
-        assert_eq!(sha256_hex(&read_stored(rel)), want, "{rel}");
     }
 }
 

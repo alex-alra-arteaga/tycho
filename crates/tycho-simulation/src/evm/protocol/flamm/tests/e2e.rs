@@ -28,7 +28,7 @@ use serde_json::Value;
 use tycho_client::feed::{synchronizer::ComponentWithState, BlockHeader};
 use tycho_common::{
     dto::{ProtocolComponent, ProtocolStateDelta, ResponseProtocolState},
-    models::{token::Token, Chain},
+    models::Chain,
     simulation::{
         errors::SimulationError,
         protocol_sim::{Balances, BlockContext, ProtocolSim},
@@ -37,15 +37,13 @@ use tycho_common::{
 };
 
 use super::{
-    core::common::revert_class,
     fixtures::{load, s},
-    protocol_sim::{limit_of, refused_quote},
+    protocol_sim::{amount, bytes, cbbtc, check_swap_grid, recorded, usdc},
 };
 use crate::{
     evm::protocol::{
         flamm::{
             decoder::{lever_up_id, swap_id},
-            error::FlammError,
             sim::{GAS_LEVER_UP, GAS_SWAP_BUY, GAS_SWAP_SELL},
             FlammPoolState, VenueKind, PROTOCOL_SYSTEM,
         },
@@ -55,8 +53,6 @@ use crate::{
 };
 
 const POOL: &str = "0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572";
-const CBBTC: &str = "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf";
-const USDC: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 const CREATION_BLOCK: u64 = 51_154_990;
 const ACTIVATION_BLOCK: u64 = 51_298_416;
 /// `LevPauseSet(false)`, the curator Safe calling `FLAMM.setLevPaused(false)`: leverage is paused
@@ -78,24 +74,6 @@ const STOP_BLOCKS: [u64; 2] = [51_155_010, 51_302_920];
 /// Base's block time, what the stream decoder adds to a confirmed header's timestamp to reach
 /// the execution clock (`Chain::Base.block_time_secs()`).
 const BLOCK_TIME: u64 = 2;
-
-fn bytes(hex: &str) -> Bytes {
-    let digits = hex.strip_prefix("0x").unwrap_or(hex);
-    let padded = if digits.len() % 2 == 1 { format!("0x0{digits}") } else { format!("0x{digits}") };
-    Bytes::from_str(&padded).unwrap_or_else(|e| panic!("{hex}: {e}"))
-}
-
-fn token(addr: &str, symbol: &str, decimals: u32) -> Token {
-    Token::new(&bytes(addr), symbol, decimals, 0, &[Some(100_000)], Chain::Base, 100)
-}
-
-fn cbbtc() -> Token {
-    token(CBBTC, "cbBTC", 8)
-}
-
-fn usdc() -> Token {
-    token(USDC, "USDC", 6)
-}
 
 fn map(v: &Value) -> HashMap<String, Bytes> {
     v.as_object()
@@ -278,31 +256,11 @@ impl Fixtures {
     }
 }
 
-/// The recorded outcome of one `previewSwap` / `previewLever` row: the return words, or the
-/// revert class.
-fn recorded(row: &Value) -> Result<Vec<U256>, Option<FlammError>> {
-    if row["ok"].as_bool().unwrap() {
-        let h = s(row, "ret");
-        let b = hex::decode(h.trim_start_matches("0x")).unwrap();
-        Ok(b.chunks(32)
-            .map(U256::from_be_slice)
-            .collect())
-    } else {
-        Err(revert_class(s(row, "revert")))
-    }
-}
-
-fn amount(row: &Value) -> U256 {
-    U256::from_str_radix(s(row, "amount_in"), 10).unwrap()
-}
-
 /// Every recorded row at a pinned block against the state at that block's own clock (the clock
-/// `eth_call` at the block ran with): the preview words or the refusal class, the quote
-/// semantics per row (a full fill is quoted with the recorded output, a clipped size is
-/// refused, a reverting size is refused above the limit and is the empty trade, dust, at or
-/// below it), the limits at the recorded edges, the hook's spot, and the lever venue row by row:
-/// its recorded refusals below `SPREAD_AGE_CLEARED_BLOCK` and its recorded quote and edge from
-/// there. Returns `(swap rows, full fills)`.
+/// `eth_call` at the block ran with): the swap grid and the recorded edges through
+/// [`check_swap_grid`], then the hook's spot and the lever venue row by row — its recorded
+/// refusals below `SPREAD_AGE_CLEARED_BLOCK` and its recorded quote and edge from there.
+/// Returns `(swap rows, full fills)`.
 fn check_grids(
     swap: &FlammPoolState,
     lever: &FlammPoolState,
@@ -314,84 +272,7 @@ fn check_grids(
     let flamm = swap
         .flamm()
         .unwrap_or_else(|| panic!("block {block}: {:?}", swap.core().err()));
-    let (mut rows, mut full) = (0usize, 0usize);
-    for (dir, key) in [(true, "swap_sell"), (false, "swap_buy")] {
-        let (tin, tout) = if dir { (&cb, &us) } else { (&us, &cb) };
-        let limit = swap
-            .get_limits(tin.address.clone(), tout.address.clone())
-            .map_or(U256::ZERO, |_| limit_of(swap, tin, tout));
-        for row in grids[key].as_array().unwrap() {
-            rows += 1;
-            let a = amount(row);
-            let chain = recorded(row);
-            let ctx = format!("block {block} {key} {a}");
-            let got = flamm.preview_swap(dir, a, now);
-            match (&chain, &got) {
-                (Ok(words), Ok(p)) => {
-                    assert_eq!(words[0], p.used_native, "{ctx}: amountInUsed");
-                    assert_eq!(words[1], p.net_native, "{ctx}: amountOut");
-                    assert_eq!(words[2], p.fee_wad, "{ctx}: feeWad");
-                }
-                (Err(Some(want)), Err(e)) => assert_eq!(want, e, "{ctx}: revert class"),
-                (Err(None), _) => panic!("{ctx}: unmapped revert data {}", s(row, "revert")),
-                _ => panic!("{ctx}: chain {chain:?}, port {got:?}"),
-            }
-            let quote = swap.get_amount_out(u256_to_biguint(a), tin, tout);
-            match &chain {
-                Ok(words) if words[0] == a => {
-                    let q = quote.unwrap_or_else(|e| panic!("{ctx}: full fill refused: {e}"));
-                    assert_eq!(q.amount, u256_to_biguint(words[1]), "{ctx}: amount out");
-                    assert_eq!(
-                        q.gas,
-                        BigUint::from(if dir { GAS_SWAP_SELL } else { GAS_SWAP_BUY }),
-                        "{ctx}: gas"
-                    );
-                    full += 1;
-                }
-                Ok(_) => {
-                    let e = quote
-                        .err()
-                        .unwrap_or_else(|| panic!("{ctx}: a clipped fill was quoted"));
-                    assert!(e.to_string().contains("partial fill"), "{ctx}: {e}");
-                }
-                Err(want) => {
-                    let want = want.as_ref().map(|w| w.to_string());
-                    if refused_quote(quote, swap, a, limit, want.as_deref(), &ctx) {
-                        assert!(!dir, "{ctx}: a sell is never dust");
-                    }
-                }
-            }
-        }
-    }
-    for (key, edge, tin, tout) in
-        [("swap_sell", "sell_edge", &cb, &us), ("swap_buy", "buy_edge", &us, &cb)]
-    {
-        let Some(want) = grids[edge].as_str() else {
-            // No size fills (the pool is paused): no limit either.
-            let limits = swap.get_limits(tin.address.clone(), tout.address.clone());
-            assert!(
-                matches!(&limits, Ok((a, _)) if a == &BigUint::ZERO) || limits.is_err(),
-                "block {block} {edge}: {limits:?}"
-            );
-            continue;
-        };
-        let want = U256::from_str_radix(want, 10).unwrap();
-        let want_out = grids[key]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| amount(r) == want)
-            .map(|r| recorded(r).unwrap()[1])
-            .unwrap();
-        let (a, out) = swap
-            .get_limits(tin.address.clone(), tout.address.clone())
-            .unwrap();
-        assert_eq!(a, u256_to_biguint(want), "block {block} {edge}");
-        assert_eq!(out, u256_to_biguint(want_out), "block {block} {edge} out");
-        assert!(swap
-            .get_amount_out(a.clone() + BigUint::from(1u8), tin, tout)
-            .is_err());
-    }
+    let (rows, full, _dust) = check_swap_grid(swap, grids, block, now);
     // The hook's spot, when the pool answers it (a paused pool still has a book).
     let spot = recorded(&grids["spot"]);
     if let Ok(words) = spot {
