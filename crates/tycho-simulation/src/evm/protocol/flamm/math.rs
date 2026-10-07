@@ -6,6 +6,15 @@
 //! square root. Checked arithmetic that Solidity would panic on is surfaced as
 //! [`FlammError::PanicArithmetic`] / [`FlammError::PanicDivZero`], never as a Rust panic.
 //!
+//! # Attribution
+//! The `mulDiv` and `sqrt` semantics reproduced here are OpenZeppelin Contracts 4.8
+//! `utils/math/Math.sol`: https://github.com/OpenZeppelin/openzeppelin-contracts
+//! License: MIT
+//! Copyright (c) 2016-2022 zOS Global Limited and contributors
+//!
+//! The implementations are written against a 512-bit product rather than transliterated from
+//! OpenZeppelin's limb algorithm; only the semantics and the revert conditions are shared.
+//!
 //! Two `mulDiv` families live here because the two contracts they serve differ on overflow:
 //!
 //! - [`mul_div`] / [`mul_div_up`] are OpenZeppelin 4.8 `Math.mulDiv` with its reverts
