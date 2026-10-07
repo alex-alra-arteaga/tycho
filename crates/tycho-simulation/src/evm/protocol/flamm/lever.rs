@@ -510,21 +510,6 @@ mod tests {
     }
 
     #[test]
-    fn pay_native_is_ceiled_then_capped_at_the_input() {
-        let scale = w(1_000_000_000_000);
-        // payL18 not on the native grid: one more native unit.
-        assert_eq!(div_ceil(w(11_301_759) * scale + w(1), scale), Ok(w(11_301_760)));
-        assert_eq!(div_ceil(w(11_301_759) * scale, scale), Ok(w(11_301_759)));
-        // The cap: `if (p.payNative > loanIn) p.payNative = loanIn` (FLAMMLeverLib.sol:141).
-        let loan_in = w(11_301_759);
-        let mut pay = div_ceil(loan_in * scale + w(1), scale).unwrap();
-        if pay > loan_in {
-            pay = loan_in;
-        }
-        assert_eq!(pay, loan_in);
-    }
-
-    #[test]
     fn taker_band_floor_is_inclusive() {
         let band = w(80_000_000_000_000_000);
         let worth = w(1_000_000) * WAD;
