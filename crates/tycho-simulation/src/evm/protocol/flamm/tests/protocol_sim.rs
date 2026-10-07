@@ -320,10 +320,13 @@ fn previews_reproduce_the_chain_at_every_pinned_block() {
                     Ok(words) if words[0] == a => {
                         let q = quote.unwrap_or_else(|e| panic!("{ctx}: full fill refused: {e}"));
                         assert_eq!(q.amount, u256_to_biguint(words[1]), "{ctx}: amount out");
-                        assert!(
-                            q.gas >= BigUint::from(if dir { GAS_SWAP_SELL } else { GAS_SWAP_BUY }),
-                            "{ctx}: gas {}",
-                            q.gas
+                        // Exactly the direction's constant: the pool's dearer paths (the cap
+                        // bisection, a second funding pass) only run where it clips the input,
+                        // and a clipped input is not a quote.
+                        assert_eq!(
+                            q.gas,
+                            BigUint::from(if dir { GAS_SWAP_SELL } else { GAS_SWAP_BUY }),
+                            "{ctx}: gas"
                         );
                         let next = q
                             .new_state

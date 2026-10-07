@@ -43,9 +43,11 @@ pub struct SwapPlan {
     /// The hook's answer, loan leg in the numeraire.
     pub fill: hook::FillResult,
     pub book: hook::Book,
-    /// `_maxInForGrossCap` solves of every `previewExactIn` the plan ran (gas accounting).
+    /// `_maxInForGrossCap` solves of every `previewExactIn` the plan ran: non-zero exactly where
+    /// the cap clipped the input. Not part of the on-chain plan; the plan tests assert it.
     pub cap_evals: u64,
-    /// Funding passes the sell's plan ran (gas accounting; zero for a buy).
+    /// Funding passes the sell's plan ran (zero for a buy). Not part of the on-chain plan; the
+    /// plan tests assert it.
     pub passes: u64,
 }
 
@@ -61,10 +63,10 @@ pub struct SwapResult {
     pub spot_after_wad: U256,
     /// The plan's loan-leg cross the band was checked at (not part of the return).
     pub price_wad: U256,
-    /// `_maxInForGrossCap` solves of the whole transaction (gas accounting, not part of the
-    /// return).
+    /// `_maxInForGrossCap` solves of the whole transaction, non-zero exactly where the cap
+    /// clipped the input (not part of the return).
     pub cap_evals: u64,
-    /// The plan's funding passes (gas accounting, not part of the return).
+    /// The plan's funding passes (not part of the return).
     pub passes: u64,
 }
 
