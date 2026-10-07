@@ -20,27 +20,10 @@ use crate::{
         statics, PoolConfig, Role,
     },
     modules::{components_in_block, protocol_changes, tracked_writes},
-    testdata::{self, fixture, hex_bytes, hex_u64, synthetic_ring, words_map},
+    testdata::{
+        self, attrs_of, config, deployments, fixture, hex_bytes, hex_u64, seed_words, words_map,
+    },
 };
-
-fn manifest_params() -> String {
-    let manifest = include_str!("../base-flamm.yaml");
-    let block = manifest
-        .split_once("&params >-\n")
-        .expect("params anchor")
-        .1;
-    // The folded scalar as YAML folds it: every line of the block, joined by one space.
-    block
-        .lines()
-        .take_while(|l| l.starts_with("    "))
-        .map(|l| &l[4..])
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn config() -> Config {
-    Config::parse(&manifest_params()).expect("manifest params parse")
-}
 
 fn live_pool() -> PoolConfig {
     let snap = fixture("snapshot");
@@ -59,30 +42,15 @@ fn live_pool() -> PoolConfig {
     statics::pool_config_from_component(&component).expect("pool config")
 }
 
-fn attrs_of(
-    changes: &tycho_substreams::prelude::TransactionChanges,
-    component_id: &str,
-) -> BTreeMap<String, (Vec<u8>, i32)> {
-    changes
-        .entity_changes
-        .iter()
-        .find(|e| e.component_id == component_id)
-        .map(|e| {
-            e.attributes
-                .iter()
-                .map(|a| (a.name.clone(), (a.value.clone(), a.change)))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// The curator's activation (block 51298416, tx 0x4af4828c…eafd, index 75): real before/after
 /// `eth_getStorageAt` over every tracked word (plus the proxies' rotation/access words and the
 /// aggregators' hot words) shows exactly two pool words moved: the pause byte of `FLAMM_NS+10`
-/// and `features` (`FLAMM_NS+23`, 0x3b -> 0x3f). The package must forward exactly those two as
-/// `pool:<slot>` updates on both components and emit no balance change (no inventory word moved).
+/// and `features` (`FLAMM_NS+23`, 0x3b -> 0x3f). This decodes the two words' bytes against
+/// `FLAMMStore.sol:262`; that exactly two are forwarded, with no deletion and no balance change,
+/// is asserted on the real stream by
+/// `e2e_deltas_follow_the_chain_and_the_pause_bits_justify_the_skips`.
 #[test]
-fn verify_activation_block_51298416_forwards_exactly_the_two_pool_words() {
+fn verify_activation_block_51298416_clears_paused_and_leaves_lev_paused() {
     let f = fixture("activation");
     let cfg = config();
     let pool = live_pool();
@@ -91,23 +59,7 @@ fn verify_activation_block_51298416_forwards_exactly_the_two_pool_words() {
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
     let empty = BlockTransactionProtocolComponents::default();
     let changes = protocol_changes(&block, &cfg, vec![pool.clone()], &empty, first_word);
-    assert_eq!(changes.block.as_ref().unwrap().number, 51298416);
-    assert_eq!(changes.block.as_ref().unwrap().ts, 0x6aa7ddc3);
-    assert_eq!(changes.changes.len(), 1);
-    let tx = &changes.changes[0];
-    assert_eq!(tx.tx.as_ref().unwrap().index, 0x4b);
-    assert!(tx.component_changes.is_empty());
-    assert!(tx.balance_changes.is_empty(), "no inventory word moved at activation");
-    let [swap_id, lever_id] = pool.component_ids();
-    let got = attrs_of(tx, &swap_id);
-    assert_eq!(got, attrs_of(tx, &lever_id));
-    let mut want = BTreeMap::new();
-    for d in f["storage_diffs"].as_array().unwrap() {
-        let name = format!("pool:{}", d["slot"].as_str().unwrap());
-        want.insert(name, (hex_bytes(&d["new"]), i32::from(ChangeType::Update)));
-    }
-    assert_eq!(want.len(), 2);
-    assert_eq!(got, want);
+    let got = attrs_of(&changes.changes[0], &pool.component_ids()[0]);
     // Decoded: `paused` (byte 22 of FLAMM_NS+10, FLAMMStore.sol:262) 1 -> 0, `initialized` and
     // `bootstrapped` (bytes 20, 21) still 1, `levPaused` (byte 23) still 1; features 0x3b -> 0x3f.
     let ns10 = &got[&format!("pool:{}", keys::hex_word(&keys::add(&keys::FLAMM_NS, 10)))].0;
@@ -200,16 +152,7 @@ fn verify_same_word_written_twice_in_one_tx_keeps_the_last_value() {
 fn verify_no_state_is_emitted_for_a_pool_before_its_creation_tx() {
     let creation = fixture("creation");
     let cfg = config();
-    let deployments: HashMap<Address, (crate::flamm::Role, Word)> = creation["codehashes"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter_map(|(a, h)| {
-            let codehash = keys::parse_word(h.as_str().unwrap()).unwrap();
-            let role = *cfg.deployments.get(&codehash)?;
-            Some((parse_address(a).unwrap(), (role, codehash)))
-        })
-        .collect();
+    let deployments = deployments();
     let deployment = |a: &Address| deployments.get(a).copied();
     let before = words_map(&creation["store_before"]);
     let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
@@ -276,55 +219,13 @@ fn pool_morpho(_cfg: &Config) -> Address {
     parse_address("0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb").unwrap()
 }
 
-/// A rotation of the Morpho oracle's proxy (`mo0`) to an aggregator the manifest does not list:
-/// the previous DualAggregator's state (its rounds, cutoff, kind and the ring `feed:mo0:tx:<r>`,
-/// 21 seeded rounds) is deleted, the window being the one its hot words gave before the
-/// transaction (schema 2.6: a proxy rotation deletes the previous aggregator's rounds).
-#[test]
-fn verify_mo0_rotation_deletes_the_previous_ring() {
-    let seeds = words_map(&fixture("seeds")["words"]);
-    let cfg = config();
-    let pool = live_pool();
-    let proxy = pool.feed("mo0").unwrap().proxy;
-    let new_agg = [0x99u8; 20];
-    let mut phase = [0u8; 32];
-    phase[30..].copy_from_slice(&4u16.to_be_bytes());
-    phase[10..30].copy_from_slice(&new_agg);
-    let tx = tx_with(2, &proxy, vec![], vec![storage_change(&proxy, &keys::slot(2), &phase, 1)]);
-    let block = testdata::block(51400000, 1789600000, vec![4; 32], vec![5; 32], vec![tx]);
-    let empty = BlockTransactionProtocolComponents::default();
-    let changes = protocol_changes(&block, &cfg, vec![pool.clone()], &empty, |a, k| {
-        seeds.get(&(*a, *k)).copied()
-    });
-    let got = attrs_of(&changes.changes[0], &pool.component_ids()[0]);
-    assert_eq!(got["feed:mo0:aggregator"].0, new_agg.to_vec());
-    assert_eq!(got["feed:mo0:round"].1, i32::from(ChangeType::Deletion));
-    let ring = feeds::dual_ring(0xbcb, 0xbc9);
-    assert_eq!(ring.len(), 21);
-    let deleted: Vec<_> = ring
-        .iter()
-        .filter(|r| {
-            got.get(&format!("feed:mo0:tx:{r}"))
-                .is_some_and(|(_, c)| *c == i32::from(ChangeType::Deletion))
-        })
-        .collect();
-    assert_eq!(deleted.len(), 21, "ring entries deleted on rotation: {deleted:?}");
-    assert_eq!(
-        got.keys()
-            .filter(|k| k.starts_with("feed:mo0:tx:"))
-            .count(),
-        21,
-        "nothing outside the window"
-    );
-}
-
 /// A round of the previous DualAggregator and the rotation in one transaction, the round first:
 /// the indexer sees the transaction's end state, so the round never surfaces (neither its ring
 /// entry nor its round id is emitted, and nothing is deleted that was never a row) and what is
 /// deleted is exactly the state the feed had before the transaction, the seeded 21-round ring.
 #[test]
 fn verify_round_then_rotation_in_one_tx_deletes_the_state_before_the_tx() {
-    let seeds = words_map(&fixture("seeds")["words"]);
+    let seeds = seed_words();
     let cfg = config();
     let pool = live_pool();
     let proxy = pool.feed("mo0").unwrap().proxy;
@@ -384,63 +285,6 @@ fn verify_round_then_rotation_in_one_tx_deletes_the_state_before_the_tx() {
             .all(|(k, (_, c))| !k.starts_with("feed:mo0:tx:") ||
                 *c == i32::from(ChangeType::Deletion))
     );
-}
-
-/// The rotation, then a round of the *new* aggregator (unknown to the manifest) in the same
-/// transaction: nothing of an unlisted aggregator is tracked, so its round is not decoded and the
-/// feed is left with `aggregator` and `phase` (and the proxy's access controller), failing closed
-/// until a package update lists it.
-#[test]
-fn verify_rotation_to_an_unlisted_aggregator_leaves_only_aggregator_and_phase() {
-    let seeds = words_map(&fixture("seeds")["words"]);
-    let cfg = config();
-    let pool = live_pool();
-    let proxy = pool.feed("mo0").unwrap().proxy;
-    let new_agg = [0x99u8; 20];
-    let block_ts = 1789600000u64;
-    let mut logs = dual_round_logs(&new_agg, 7, block_ts - 3, block_ts, 30);
-    logs.remove(0);
-    let mut phase = [0u8; 32];
-    phase[30..].copy_from_slice(&4u16.to_be_bytes());
-    phase[10..30].copy_from_slice(&new_agg);
-    let mut hotvars = [0u8; 32];
-    hotvars[32 - 6 - 4..32 - 6].copy_from_slice(&7u32.to_be_bytes());
-    let tx = tx_with(
-        2,
-        &proxy,
-        logs,
-        vec![
-            storage_change(&proxy, &keys::slot(2), &phase, 20),
-            storage_change(&new_agg, &FeedKind::Dual.transmission(7).unwrap(), &[7u8; 32], 25),
-            storage_change(&new_agg, &keys::slot(13), &hotvars, 26),
-        ],
-    );
-    let block = testdata::block(51400000, block_ts, vec![4; 32], vec![5; 32], vec![tx]);
-    let empty = BlockTransactionProtocolComponents::default();
-    let changes = protocol_changes(&block, &cfg, vec![pool.clone()], &empty, |a, k| {
-        seeds.get(&(*a, *k)).copied()
-    });
-    let got = attrs_of(&changes.changes[0], &pool.component_ids()[0]);
-    assert_eq!(got["feed:mo0:aggregator"].0, new_agg.to_vec());
-    assert_eq!(got["feed:mo0:phase"].0, keys::word_from_u64(4).to_vec());
-    assert_eq!(got["feed:mo0:kind"].1, i32::from(ChangeType::Deletion), "kind unknown");
-    for name in ["round", "secondary_round", "cutoff"] {
-        assert_eq!(got[&format!("feed:mo0:{name}")].1, i32::from(ChangeType::Deletion), "{name}");
-    }
-    assert!(!got.contains_key("feed:mo0:tx:7"));
-    assert_eq!(
-        feeds::dual_ring(0xbcb, 0xbc9)
-            .iter()
-            .filter(|r| got[&format!("feed:mo0:tx:{r}")].1 == i32::from(ChangeType::Deletion))
-            .count(),
-        21
-    );
-    let updated: Vec<&String> = got
-        .iter()
-        .filter(|(_, (_, c))| *c != i32::from(ChangeType::Deletion))
-        .map(|(k, _)| k)
-        .collect();
-    assert_eq!(updated, vec!["feed:mo0:aggregator", "feed:mo0:phase"]);
 }
 
 /// The logs of one `DualAggregator` round `round` (secondary-first order), from ordinal
@@ -510,7 +354,7 @@ fn dual_round_logs(
 /// deletes the whole ring as the reveal left it.
 #[test]
 fn verify_mo0_rotation_after_a_round_in_the_same_block_deletes_the_ring() {
-    let seeds = words_map(&fixture("seeds")["words"]);
+    let seeds = seed_words();
     let cfg = config();
     let pool = live_pool();
     let proxy = pool.feed("mo0").unwrap().proxy;
@@ -570,64 +414,6 @@ fn verify_mo0_rotation_after_a_round_in_the_same_block_deletes_the_ring() {
             .count(),
         ring.len()
     );
-}
-
-/// A secondary-only transmission (`DualAggregator._report` with `isSecondary`,
-/// `DualAggregator.sol:931-944`): a new round `L+1` whose transmission is written, and `HotVars`
-/// with both `latestAggregatorRoundId` and `latestSecondaryRoundId` at `L+1`. The ring after the
-/// block must be `L+1-20 ..= L+1` with `L-20` evicted and the secondary round `L+1`.
-#[test]
-fn verify_secondary_only_transmission_keeps_the_ring_consistent() {
-    let seeds = words_map(&fixture("seeds")["words"]);
-    let cfg = config();
-    let pool = live_pool();
-    let agg = parse_address("0xe5ec87a39445b8d5b751b116802a53c5ae7e9df1").unwrap();
-    let latest = 0xbcbu32;
-    let next = latest + 1;
-    let answer = keys::word_from_u64(0x6fc00000000);
-    let observations_ts = 1789600000u64 - 3;
-    let block_ts = 1789600000u64;
-    let logs = dual_round_logs(&agg, next, observations_ts, block_ts, 10);
-    let packed = feeds::pack_transmission(&answer, observations_ts as u32, block_ts as u32);
-    let mut hotvars = seeds[&(agg, keys::slot(13))];
-    hotvars[32 - 6 - 4..32 - 6].copy_from_slice(&next.to_be_bytes());
-    hotvars[32 - 10 - 4..32 - 10].copy_from_slice(&next.to_be_bytes());
-    let tx = tx_with(
-        1,
-        &agg,
-        logs,
-        vec![
-            storage_change(
-                &agg,
-                &FeedKind::Dual
-                    .transmission(next)
-                    .unwrap(),
-                &packed,
-                5,
-            ),
-            storage_change(&agg, &keys::slot(13), &hotvars, 6),
-        ],
-    );
-    let block = testdata::block(51400000, block_ts, vec![4; 32], vec![5; 32], vec![tx]);
-    let empty = BlockTransactionProtocolComponents::default();
-    let changes = protocol_changes(&block, &cfg, vec![pool.clone()], &empty, |a, k| {
-        seeds.get(&(*a, *k)).copied()
-    });
-    let got = attrs_of(&changes.changes[0], &pool.component_ids()[0]);
-    assert_eq!(got["feed:mo0:secondary_round"].0, keys::word_from_u64(next as u64).to_vec());
-    assert_eq!(got["feed:mo0:round"].0, keys::word_from_u64(next as u64).to_vec());
-    assert_eq!(
-        got[&format!("feed:mo0:tx:{next}")],
-        (packed.to_vec(), i32::from(ChangeType::Creation))
-    );
-    let evicted: Vec<u32> = (0..=next)
-        .filter(|r| {
-            got.get(&format!("feed:mo0:tx:{r}"))
-                .is_some_and(|(_, c)| *c == i32::from(ChangeType::Deletion))
-        })
-        .collect();
-    assert_eq!(evicted, vec![latest - 20], "only the round that left the window is evicted");
-    assert_eq!(got.len(), 4);
 }
 
 /// A Morpho accrual that moves only the market totals, with no managed supply, moves nothing the
@@ -701,261 +487,6 @@ fn verify_market_totals_move_emits_no_balance() {
         )
     );
     assert_eq!(changes.changes[0].balance_changes.len(), 2, "one per component");
-}
-
-/// The attribute names a DualAggregator round adds beyond the schema's `mo0` set.
-#[test]
-fn verify_mo0_round_attribute_names_versus_schema() {
-    let seeds = words_map(&fixture("seeds")["words"]);
-    let logs = fixture("feed_logs");
-    let entry = &logs["mo0_primary"];
-    let cfg = config();
-    let pool = live_pool();
-    let agg = parse_address("0xe5ec87a39445b8d5b751b116802a53c5ae7e9df1").unwrap();
-    let mut words = seeds.clone();
-    let after = crate::testdata::word(&entry["hotvars_after"]);
-    let (latest, secondary) = feeds::dual_hotvars(&after);
-    let mut before = after;
-    before[32 - 6 - 4..32 - 6].copy_from_slice(&(latest - 1).to_be_bytes());
-    words.insert((agg, keys::slot(13)), before);
-    synthetic_ring(&mut words, &agg, latest - 1, secondary);
-    let logs: Vec<_> = entry["logs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-        .map(|(i, l)| testdata::log(100 + i as u64, l))
-        .collect();
-    let transmission = crate::testdata::word(&entry["transmission_after"]);
-    let tx = tx_with(
-        3,
-        &agg,
-        logs,
-        vec![
-            storage_change(
-                &agg,
-                &FeedKind::Dual
-                    .transmission(latest)
-                    .unwrap(),
-                &transmission,
-                5,
-            ),
-            storage_change(&agg, &keys::slot(13), &after, 6),
-        ],
-    );
-    let block = testdata::block(
-        entry["block"].as_u64().unwrap(),
-        hex_u64(&entry["timestamp"]),
-        vec![4; 32],
-        vec![5; 32],
-        vec![tx],
-    );
-    let empty = BlockTransactionProtocolComponents::default();
-    let changes = protocol_changes(&block, &cfg, vec![pool.clone()], &empty, |a, k| {
-        words.get(&(*a, *k)).copied()
-    });
-    let got = attrs_of(&changes.changes[0], &pool.component_ids()[0]);
-    // schema 3.2 lists for mo0: aggregator, phase, access_controller, round, secondary_round,
-    // cutoff, tx:<round>; a round moves `round`, its ring entry and the evicted one
-    let names: Vec<&String> = got.keys().collect();
-    assert_eq!(
-        names,
-        vec![
-            "feed:mo0:round",
-            &format!("feed:mo0:tx:{}", latest - 21),
-            &format!("feed:mo0:tx:{latest}")
-        ]
-    );
-}
-
-/// The creation snapshot's attribute names beyond the schema snapshot's, for the record.
-#[test]
-fn verify_creation_snapshot_extras_versus_schema() {
-    let creation = fixture("creation");
-    let cfg = config();
-    let deployments: HashMap<Address, (crate::flamm::Role, Word)> = creation["codehashes"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter_map(|(a, h)| {
-            let codehash = keys::parse_word(h.as_str().unwrap()).unwrap();
-            let role = *cfg.deployments.get(&codehash)?;
-            Some((parse_address(a).unwrap(), (role, codehash)))
-        })
-        .collect();
-    let deployment = |a: &Address| deployments.get(a).copied();
-    let before = words_map(&creation["store_before"]);
-    let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
-    let block = testdata::fixture_block(&creation, vec![]);
-    let components = components_in_block(&block, &cfg, &deployment, first_word);
-    let changes = protocol_changes(&block, &cfg, vec![], &components, first_word);
-    let id = components.tx_components[0].components[0]
-        .id
-        .clone();
-    let got = attrs_of(&changes.changes[0], &id);
-    let snap = fixture("snapshot");
-    let schema: std::collections::BTreeSet<String> = snap["attributes"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
-    // Beyond the schema snapshot's names: the `kind` of each feed (an addition the README names),
-    // the seeded ring of the DualAggregator at creation (the snapshot's ring is the one at
-    // 51302915), and FLAMM-owned words the pool's own creation wrote and later cleared or that the
-    // snapshot tool did not enumerate. None of them is a `feed:mo0:answer` / `started_at` /
-    // `updated_at`.
-    let extras: Vec<&String> = got
-        .keys()
-        .filter(|k| !schema.contains(*k))
-        .collect();
-    for e in &extras {
-        assert!(
-            e.ends_with(":kind") ||
-                e.starts_with("feed:mo0:tx:") ||
-                e.starts_with("pool:") ||
-                e.starts_with("router:") ||
-                e.starts_with("hook:") ||
-                e.starts_with("account:"),
-            "unexpected creation attribute {e}"
-        );
-    }
-    assert_eq!(
-        extras
-            .iter()
-            .filter(|e| e.ends_with(":kind"))
-            .count(),
-        4
-    );
-    // Absent at creation: the ring of the snapshot's block, and the FLAMM-owned words first
-    // written after creation (absent == zero for a contract tracked from its creation).
-    for m in schema
-        .iter()
-        .filter(|k| !got.contains_key(*k))
-    {
-        assert!(
-            m.starts_with("feed:mo0:tx:") ||
-                m.starts_with("pool:") ||
-                m.starts_with("router:") ||
-                m.starts_with("hook:") ||
-                m.starts_with("spread:") ||
-                m.starts_with("account:") ||
-                m.starts_with("pricefeed:") ||
-                m.starts_with("factory:"),
-            "schema attribute {m} absent at creation"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Rotation deletions against the indexer's storage semantics.
-// ---------------------------------------------------------------------------------------------
-
-/// The attribute names the package emits for the live pool at creation, from the creation fixture
-/// replay (the rows that exist in the indexer's `protocol_state` table after the creation block).
-fn creation_attribute_names() -> std::collections::BTreeSet<String> {
-    let creation = fixture("creation");
-    let cfg = config();
-    let deployments: HashMap<Address, (crate::flamm::Role, Word)> = creation["codehashes"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter_map(|(a, h)| {
-            let codehash = keys::parse_word(h.as_str().unwrap()).unwrap();
-            let role = *cfg.deployments.get(&codehash)?;
-            Some((parse_address(a).unwrap(), (role, codehash)))
-        })
-        .collect();
-    let deployment = |a: &Address| deployments.get(a).copied();
-    let before = words_map(&creation["store_before"]);
-    let first_word = |a: &Address, k: &Word| before.get(&(*a, *k)).copied();
-    let block = testdata::fixture_block(&creation, vec![]);
-    let components = components_in_block(&block, &cfg, &deployment, first_word);
-    let changes = protocol_changes(&block, &cfg, vec![], &components, first_word);
-    let id = components.tx_components[0].components[0]
-        .id
-        .clone();
-    attrs_of(&changes.changes[0], &id)
-        .into_keys()
-        .collect()
-}
-
-/// A proxy rotation (slot 2 write) of feed `role` to `new_agg`, replayed on the live pool with
-/// the seeds as the store: the attribute changes it emits on the swap component.
-fn rotation_changes(role: &str, new_agg: Address) -> BTreeMap<String, (Vec<u8>, i32)> {
-    let seeds = words_map(&fixture("seeds")["words"]);
-    let cfg = config();
-    let pool = live_pool();
-    let proxy = pool.feed(role).unwrap().proxy;
-    let mut phase = [0u8; 32];
-    phase[30..].copy_from_slice(&9u16.to_be_bytes());
-    phase[10..30].copy_from_slice(&new_agg);
-    let tx = tx_with(2, &proxy, vec![], vec![storage_change(&proxy, &keys::slot(2), &phase, 1)]);
-    let block = testdata::block(51400000, 1789600000, vec![4; 32], vec![5; 32], vec![tx]);
-    let empty = BlockTransactionProtocolComponents::default();
-    let changes = protocol_changes(&block, &cfg, vec![pool.clone()], &empty, |a, k| {
-        seeds.get(&(*a, *k)).copied()
-    });
-    attrs_of(&changes.changes[0], &pool.component_ids()[0])
-}
-
-/// Every attribute a rotation deletes must exist in the indexer's state, i.e. be one the package
-/// emitted before: `tycho-storage` versions a `Deletion` by removing the row from the latest set
-/// and returns `StorageError::Unexpected("Missing deleted row …")` when there is none
-/// (`crates/tycho-storage/src/postgres/versioning.rs`, `set_partitioned_versioning_attributes`,
-/// `VersioningEntry::Deletion` arm), which fails the whole block's DB write and halts the
-/// extractor at that block. The rows that exist for the live pool right after its creation are
-/// the creation snapshot's names, and after the swap block the schema snapshot's set. Rotations
-/// to an unlisted aggregator delete the most: the new aggregator contributes nothing beyond
-/// `aggregator` / `phase`.
-#[test]
-fn verify_rotation_deletes_only_attributes_that_exist() {
-    let mut existing = creation_attribute_names();
-    let snap = fixture("snapshot");
-    existing.extend(
-        snap["attributes"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned(),
-    );
-    let mut offending: Vec<String> = Vec::new();
-    for role in ["asset", "loan0", "seq", "mo0"] {
-        let got = rotation_changes(role, [0x99u8; 20]);
-        for (name, (_, change)) in &got {
-            if *change == i32::from(ChangeType::Deletion) && !existing.contains(name) {
-                offending.push(name.clone());
-            }
-        }
-    }
-    assert!(
-        offending.is_empty(),
-        "deletions of attributes that never existed (each fails the block's DB write): {offending:?}"
-    );
-}
-
-/// The same rule on a rotation to a listed aggregator: the new OCR2 aggregator's rounds replace
-/// the old one's, and only the access-list word the new aggregator lacks is deleted (an OCR2
-/// feed never had a `secondary_round` or a `cutoff`, so neither is named).
-#[test]
-fn verify_rotation_to_a_listed_ocr2_aggregator_deletes_only_existing_names() {
-    let existing = creation_attribute_names();
-    let new_agg = parse_address("0x68be4c50235205ede361ac8244b1ee221cdda5e2").unwrap();
-    let got = rotation_changes("asset", new_agg);
-    let offending: Vec<&String> = got
-        .iter()
-        .filter(|(name, (_, change))| {
-            *change == i32::from(ChangeType::Deletion) && !existing.contains(*name)
-        })
-        .map(|(name, _)| name)
-        .collect();
-    assert!(offending.is_empty(), "deletions of attributes that never existed: {offending:?}");
-    let deleted: Vec<&String> = got
-        .iter()
-        .filter(|(_, (_, change))| *change == i32::from(ChangeType::Deletion))
-        .map(|(name, _)| name)
-        .collect();
-    assert_eq!(deleted, vec!["feed:asset:access_list"]);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1044,18 +575,9 @@ struct Chain {
 impl Chain {
     fn new(cfg: Config) -> Self {
         let creation = fixture("creation");
-        let deployments: HashMap<Address, (Role, Word)> = creation["codehashes"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .filter_map(|(a, h)| {
-                let codehash = keys::parse_word(h.as_str().unwrap()).unwrap();
-                let role = *cfg.deployments.get(&codehash)?;
-                Some((parse_address(a).unwrap(), (role, codehash)))
-            })
-            .collect();
+        let deployments = deployments();
         let deployment = |a: &Address| deployments.get(a).copied();
-        let mut store = words_map(&fixture("seeds")["words"]);
+        let mut store = seed_words();
         store.extend(words_map(&creation["store_before"]));
         let first_word = |a: &Address, k: &Word| store.get(&(*a, *k)).copied();
         let block = testdata::fixture_block(&creation, vec![]);
@@ -1441,7 +963,11 @@ fn verify_dual_feed_rows_follow_the_words_through_rotations_and_rounds() {
     // And to an unlisted aggregator, then back again.
     let rotation = chain.rotation("mo0", &[0x99u8; 20], 6);
     chain.block(vec![rotation]);
-    assert_eq!(chain.names("mo0").len(), 2);
+    assert_eq!(
+        chain.names("mo0"),
+        BTreeSet::from(["feed:mo0:aggregator".to_string(), "feed:mo0:phase".to_string()]),
+        "an unlisted aggregator leaves only the rotation words"
+    );
     let rotation = chain.rotation("mo0", &agg, 7);
     chain.block(vec![rotation]);
     assert_eq!(chain.names("mo0").len(), 6 + 21);

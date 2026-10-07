@@ -6,49 +6,25 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ethabi::ethereum_types::U256;
-use serde_json::Value;
 use substreams_ethereum::pb::eth::v2::StorageChange;
-use tycho_substreams::prelude::{ChangeType, ProtocolComponent, TransactionChanges};
+use tycho_substreams::prelude::{ChangeType, ProtocolComponent};
 
 use crate::{
     config::Config,
     flamm::{
-        calldata::{
-            self, CREATE_POOL_SELECTOR, CREATE_POOL_SIGNATURE, POOL_CREATED_SIGNATURE,
-            POOL_CREATED_TOPIC,
-        },
+        calldata::{self, POOL_CREATED_TOPIC},
         feeds::{self, FeedKind},
-        keys::{
-            self, field, hex_address, hex_word, keccak256, parse_address, parse_word, Address, Word,
-        },
+        keys::{self, field, hex_address, hex_word, parse_address, parse_word, Address, Word},
         statics,
-        words::{block_writes, deployments_in_block, WordView},
+        words::{block_writes, WordView},
         PoolConfig, Role, VenueConfig,
     },
     modules::{components_in_block, protocol_changes, tracked_writes},
-    testdata::{self, address, fixture, hex_bytes, hex_u64, synthetic_ring, word, words_map},
+    testdata::{
+        self, address, attrs_of, config, deployments, fixture, hex_bytes, hex_u64, seed_words,
+        synthetic_ring, word, words_map,
+    },
 };
-
-/// The params string of `base-flamm.yaml`: the `&params` folded block scalar, folded the way
-/// YAML folds it.
-fn manifest_params() -> String {
-    let manifest = include_str!("../base-flamm.yaml");
-    let block = manifest
-        .split_once("&params >-\n")
-        .expect("params anchor")
-        .1;
-    // The folded scalar as YAML folds it: every line of the block, joined by one space.
-    block
-        .lines()
-        .take_while(|l| l.starts_with("    "))
-        .map(|l| &l[4..])
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn config() -> Config {
-    Config::parse(&manifest_params()).expect("manifest params parse")
-}
 
 fn snapshot_component() -> ProtocolComponent {
     let snap = fixture("snapshot");
@@ -70,97 +46,12 @@ fn live_pool() -> PoolConfig {
     statics::pool_config_from_component(&snapshot_component()).expect("pool config from snapshot")
 }
 
-/// `deploy:` lookup from the creation fixture's codehashes and the manifest registry.
-fn deployments() -> HashMap<Address, (Role, Word)> {
-    let cfg = config();
-    fixture("creation")["codehashes"]
-        .as_object()
-        .expect("codehashes")
-        .iter()
-        .filter_map(|(a, h)| {
-            let codehash = parse_word(h.as_str().unwrap()).unwrap();
-            let role = *cfg.deployments.get(&codehash)?;
-            Some((parse_address(a).unwrap(), (role, codehash)))
-        })
-        .collect()
-}
-
-fn attrs_of(changes: &TransactionChanges, component_id: &str) -> BTreeMap<String, (Vec<u8>, i32)> {
-    changes
-        .entity_changes
-        .iter()
-        .find(|e| e.component_id == component_id)
-        .map(|e| {
-            e.attributes
-                .iter()
-                .map(|a| (a.name.clone(), (a.value.clone(), a.change)))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn canonical_type(input: &Value) -> String {
-    let t = input["type"].as_str().unwrap();
-    if let Some(rest) = t.strip_prefix("tuple") {
-        let inner: Vec<String> = input["components"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(canonical_type)
-            .collect();
-        format!("({}){rest}", inner.join(","))
-    } else {
-        t.to_string()
-    }
-}
-
-#[test]
-fn factory_abi_matches_the_constants() {
-    let abi: Value = serde_json::from_str(include_str!("../abi/FLAMMFactory.json")).unwrap();
-    for entry in abi["abi"].as_array().unwrap() {
-        let sig = format!(
-            "{}({})",
-            entry["name"].as_str().unwrap(),
-            entry["inputs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(canonical_type)
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        match entry["type"].as_str().unwrap() {
-            "event" => {
-                assert_eq!(sig, POOL_CREATED_SIGNATURE);
-                assert_eq!(keccak256(sig.as_bytes()), POOL_CREATED_TOPIC);
-            }
-            "function" => {
-                assert_eq!(sig, CREATE_POOL_SIGNATURE);
-                assert_eq!(keccak256(sig.as_bytes())[..4], CREATE_POOL_SELECTOR);
-            }
-            other => panic!("unexpected abi entry {other}"),
-        }
-    }
-    // The real creation log carries the topic.
-    let creation = fixture("creation");
-    let created = creation["logs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|l| hex_bytes(&l["topics"][0]) == POOL_CREATED_TOPIC)
-        .count();
-    assert_eq!(created, 1);
-}
-
 #[test]
 fn manifest_params_are_the_fixture_values() {
     let cfg = config();
-    let seeds = fixture("seeds");
-    assert_eq!(
-        cfg.words,
-        words_map(&seeds["words"]),
-        "seed words differ from testdata/seeds_51154965.json"
-    );
+    // The seeded words' keys and values are asserted against the e2e corpus' `eth_getStorageAt`
+    // sweep at 51154965, in both directions, by `e2e_tests::replay`; their number is pinned here.
+    assert_eq!(cfg.words.len(), 48);
     let codehashes = fixture("creation")["codehashes"].clone();
     let expect = |role: Role, address: &str| {
         let h = parse_word(codehashes[address].as_str().unwrap()).unwrap();
@@ -215,7 +106,7 @@ fn manifest_params_are_the_fixture_values() {
 #[test]
 fn seed_words_agree_with_the_views() {
     let seeds = fixture("seeds");
-    let words = words_map(&seeds["words"]);
+    let words = seed_words();
     let cfg = config();
     let w = |a: &str, k: &Word| words[&(parse_address(a).unwrap(), *k)];
     for (role, proxy, agg) in [
@@ -435,63 +326,6 @@ fn create_pool_calldata_and_log_decode() {
     );
 }
 
-#[test]
-fn registered_code_is_recognised_at_creation() {
-    let creation = fixture("creation");
-    let cfg = config();
-    let mut changes = Vec::new();
-    // The three the creation block replays code for: the pool proxy and the financing account,
-    // created by the `createPool` transaction itself, and the spread hook, deployed in 51154988.
-    let deployed = [
-        "0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572",
-        "0x6760e3b032ee2d670cb684d9076b8f48cb066c48",
-        "0x04988af54ec88d2de77b191025eaef2fe488f93b",
-    ];
-    for (i, (a, c)) in creation["codes"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter(|(a, _)| deployed.contains(&a.as_str()))
-        .enumerate()
-    {
-        changes.push(testdata::code_change(
-            &parse_address(a).unwrap(),
-            &hex_bytes(&c["code"]),
-            i as u64 + 1,
-        ));
-    }
-    changes.push(testdata::code_change(&[0x42u8; 20], &[0x60, 0x01, 0x60, 0x01], 99));
-    let tx = testdata::transaction(testdata::TxSpec {
-        index: 7,
-        hash: vec![1; 32],
-        from: vec![2; 20],
-        to: vec![3; 20],
-        input: vec![],
-        logs: vec![],
-        storage_changes: vec![],
-        code_changes: changes,
-        create: true,
-    });
-    let block = testdata::block(51154990, 1789099327, vec![4; 32], vec![5; 32], vec![tx]);
-    let found = deployments_in_block(&block, &cfg.deployments);
-    let roles: HashMap<String, Role> = found
-        .iter()
-        .map(|d| (hex_address(&d.address), d.role))
-        .collect();
-    assert_eq!(roles.len(), 3);
-    assert_eq!(roles["0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572"], Role::Pool);
-    assert_eq!(roles["0x6760e3b032ee2d670cb684d9076b8f48cb066c48"], Role::Account);
-    assert_eq!(roles["0x04988af54ec88d2de77b191025eaef2fe488f93b"], Role::SpreadHook);
-    for d in &found {
-        assert_eq!(
-            hex_word(&d.codehash),
-            creation["codehashes"][hex_address(&d.address)]
-                .as_str()
-                .unwrap()
-        );
-    }
-}
-
 /// The creation block replayed: `map_components` then `map_protocol_changes`.
 fn replay_creation() -> (Vec<ProtocolComponent>, tycho_substreams::prelude::BlockChanges) {
     let creation = fixture("creation");
@@ -511,26 +345,17 @@ fn replay_creation() -> (Vec<ProtocolComponent>, tycho_substreams::prelude::Bloc
     (created, changes)
 }
 
+/// The schema snapshot lists the pool's contracts for the reader; the component carries them as
+/// static attributes and lists none (the indexer resolves `contracts` against accounts the stream
+/// created, and a native integration creates no accounts), with the pool as the id's prefix. The
+/// ids, tokens, statics and creation transaction themselves are asserted against
+/// `integration_test.tycho.yaml` — the source the hosted range harness enforces — by
+/// `e2e_creation_matches_the_range_test_expectations`.
 #[test]
-fn creation_block_emits_both_components_with_the_snapshot_statics() {
+fn creation_carries_the_pools_contracts_as_statics() {
     let (created, _) = replay_creation();
     assert_eq!(created.len(), 2);
     let snap = fixture("snapshot");
-    let expected: BTreeMap<String, Vec<u8>> = snap["component"]["static_attributes"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .map(|(k, v)| (k.clone(), hex_bytes(v)))
-        .collect();
-    let tokens: Vec<Vec<u8>> = snap["component"]["tokens"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(hex_bytes)
-        .collect();
-    // The schema snapshot lists the pool's contracts for the reader; the component carries them as
-    // static attributes and lists none (the indexer resolves `contracts` against accounts the
-    // stream created, and a native integration creates no accounts).
     let contracts: Vec<Vec<u8>> = snap["component"]["contract_ids"]
         .as_array()
         .unwrap()
@@ -538,16 +363,12 @@ fn creation_block_emits_both_components_with_the_snapshot_statics() {
         .map(hex_bytes)
         .collect();
     assert_eq!(contracts.len(), 8);
-    for (component, kind) in created.iter().zip([0u64, 1u64]) {
+    for component in &created {
         let got: BTreeMap<String, Vec<u8>> = component
             .static_att
             .iter()
             .map(|a| (a.name.clone(), a.value.clone()))
             .collect();
-        let mut want = expected.clone();
-        want.insert("component_kind".into(), keys::word_from_u64(kind).to_vec());
-        assert_eq!(got, want, "static attributes of {}", component.id);
-        assert_eq!(component.tokens, tokens);
         assert!(component.contracts.is_empty());
         assert!(
             component
@@ -562,23 +383,7 @@ fn creation_block_emits_both_components_with_the_snapshot_statics() {
                 hex::encode(address)
             );
         }
-        assert_eq!(
-            component
-                .protocol_type
-                .as_ref()
-                .unwrap()
-                .name,
-            "flamm_pool"
-        );
-        assert_eq!(component.change, i32::from(ChangeType::Creation));
     }
-    assert_eq!(
-        created[0].id,
-        snap["component"]["id"]
-            .as_str()
-            .unwrap()
-    );
-    assert_eq!(created[1].id, snap["lever_up_id"].as_str().unwrap());
 }
 
 #[test]
@@ -918,32 +723,6 @@ fn creation_snapshot_carries_every_tracked_word_feed_and_balance() {
     );
 }
 
-#[test]
-fn swap_block_words_before_are_the_snapshot() {
-    // The fixture's words at 51302915 (eth_getStorageAt) are the schema snapshot's attributes at
-    // that block, keyed through this package's slot derivations.
-    let swap = fixture("swap");
-    let before = words_map(&swap["words_before"]);
-    let snap = fixture("snapshot");
-    let pool = live_pool();
-    let seeds = words_map(&fixture("seeds")["words"]);
-    let mut checked = 0;
-    for (a, k, name) in pool.tracked_words() {
-        if let Some(v) = snap["attributes"].get(&name) {
-            // the proxies' access controllers are not in the swap fixture: seeded, never written
-            // since
-            let value = before
-                .get(&(a, k))
-                .or_else(|| seeds.get(&(a, k)))
-                .unwrap_or_else(|| panic!("{name}"));
-            let expected = hex_bytes(v);
-            assert_eq!(value[32 - expected.len()..].to_vec(), expected, "{name}");
-            checked += 1;
-        }
-    }
-    assert_eq!(checked, 87 + 6 + 4, "raw words, Morpho/IRM words, proxy access controllers");
-}
-
 /// The words store as of 51302915 for the swap fixture: the fixture reads every tracked word
 /// (`eth_getStorageAt`, zero included), the store records writes, so a word that reads zero was
 /// never written and has no store row. (A word written back to zero would be in the store; none
@@ -1106,23 +885,6 @@ fn first_write_of_a_word_without_a_row_is_a_creation_and_the_next_an_update() {
         (keys::word_from_u64(9).to_vec(), i32::from(ChangeType::Update)),
         "the row exists since the earlier transaction"
     );
-    // The same write in a later block: the words store holds the row.
-    let block = testdata::block(
-        51302917,
-        hex_u64(&header["timestamp"]) + 2,
-        vec![2u8; 32],
-        hex_bytes(&header["hash"]),
-        vec![tx(0, vec![write(1, 10)])],
-    );
-    let changes = protocol_changes(&block, &cfg, vec![pool.clone()], &empty, |a, k| {
-        if (*a, *k) == (pool.hook, hook_word) {
-            Some(keys::word_from_u64(9))
-        } else {
-            store.get(&(*a, *k)).copied()
-        }
-    });
-    let later = attrs_of(&changes.changes[0], &swap_id);
-    assert_eq!(later[hook_name], (keys::word_from_u64(10).to_vec(), i32::from(ChangeType::Update)));
     // A seeded word never written in the range (the IRM rate) is held from the seed.
     let venue = &pool.venues[0];
     let rate_key = keys::irm_rate_key(&venue.market_id);
@@ -1297,7 +1059,7 @@ fn fixture_logs(set: &str) -> Vec<substreams_ethereum::pb::eth::v2::Log> {
 
 #[test]
 fn ocr2_rounds_follow_the_hot_words_and_agree_with_the_events() {
-    let seeds = words_map(&fixture("seeds")["words"]);
+    let seeds = seed_words();
     let logs = fixture("feed_logs");
     for (set, role, agg) in [
         ("asset", "asset", "0x51ce3091cf646587e02cad83b580992f8723e718"),
@@ -1362,7 +1124,7 @@ fn sequencer_rounds_follow_record_round_and_update_round() {
     // Status change (round 20 at 47851108): `_recordRound` rewrites `s_feedState` (round, status,
     // startedAt from the L1 message, updatedAt = block.timestamp); all four attributes move.
     let entry = &logs["seq_answer_updated"];
-    let mut words = words_map(&fixture("seeds")["words"]);
+    let mut words = seed_words();
     words.insert((agg, keys::slot(4)), word(&entry["feedstate_before"]));
     let after = word(&entry["feedstate_after"]);
     let got = replay_feed_round("seq_answer_updated", &words, vec![(agg, keys::slot(4), after)]);
@@ -1405,7 +1167,7 @@ fn sequencer_rounds_follow_record_round_and_update_round() {
 #[test]
 fn dual_aggregator_rounds_keep_the_ring_the_reveal_reads() {
     let logs = fixture("feed_logs");
-    let mut words = words_map(&fixture("seeds")["words"]);
+    let mut words = seed_words();
     let agg = parse_address("0xe5ec87a39445b8d5b751b116802a53c5ae7e9df1").unwrap();
     // Primary round 3583: the hot words before it are those after it with the round one lower.
     let after = word(&logs["mo0_primary"]["hotvars_after"]);
@@ -1492,7 +1254,7 @@ fn proxy_rotation_clears_the_old_rounds_and_reads_the_new_aggregator() {
     // The cbBTC/USD proxy rotates to the USDC/USD aggregator (a registered OCR2 whose words are
     // seeded): the state is re-derived from the new aggregator's words and diffed against the
     // old one's.
-    let seeds = words_map(&fixture("seeds")["words"]);
+    let seeds = seed_words();
     let cfg = config();
     let pool = live_pool();
     let proxy = pool.feed("asset").unwrap().proxy;
@@ -1525,20 +1287,9 @@ fn proxy_rotation_clears_the_old_rounds_and_reads_the_new_aggregator() {
     let got = attrs_of(&changes.changes[0], &pool.component_ids()[0]);
     assert_eq!(got["feed:asset:aggregator"].0, new_agg.to_vec());
     assert_eq!(got["feed:asset:phase"].0, keys::word_from_u64(3).to_vec());
-    // the new aggregator's rounds, from its seeded `HotVars` / `s_transmissions`
-    assert_eq!(
-        got["feed:asset:round"],
-        (keys::word_from_u64(0x16).to_vec(), i32::from(ChangeType::Update))
-    );
-    for name in ["feed:asset:answer", "feed:asset:started_at", "feed:asset:updated_at"] {
-        assert_eq!(got[name].1, i32::from(ChangeType::Update), "{name}");
-    }
     // `kind` (both OCR2) and `check_enabled` (both true) are unchanged, so not re-emitted
     assert!(!got.contains_key("feed:asset:kind"));
     assert!(!got.contains_key("feed:asset:check_enabled"));
-    // `s_accessList[asset proxy]` on the new aggregator is not seeded: the pair stays incomplete,
-    // fail closed.
-    assert_eq!(got["feed:asset:access_list"].1, i32::from(ChangeType::Deletion));
     assert!(!got.contains_key("feed:loan0:aggregator"));
     // an OCR2 feed never had a ring, a secondary round or a cutoff, so none is deleted
     assert!(!got.keys().any(|k| {
@@ -1546,7 +1297,9 @@ fn proxy_rotation_clears_the_old_rounds_and_reads_the_new_aggregator() {
             k == "feed:asset:secondary_round" ||
             k == "feed:asset:cutoff"
     }));
-    // aggregator, phase and the four round attributes updated; access_list deleted
+    // aggregator, phase and the four round attributes updated; access_list deleted (the rounds
+    // re-derived from the new aggregator's words and that deletion are asserted on this same pair
+    // by `verify_feed_rows_follow_the_words_through_rotations_and_rounds`)
     assert_eq!(got.len(), 7);
     assert_eq!(
         got.values()

@@ -13,10 +13,38 @@ use substreams_ethereum::pb::eth::v2::{
     TransactionReceipt, TransactionTrace, TransactionTraceStatus,
 };
 
-use crate::flamm::{
-    feeds::{self, FeedKind},
-    keys::{self, parse_address, parse_word, Address, Word},
+use tycho_substreams::prelude::TransactionChanges;
+
+use crate::{
+    config::Config,
+    flamm::{
+        feeds::{self, FeedKind},
+        keys::{self, parse_address, parse_word, Address, Word},
+        Role,
+    },
 };
+
+/// The params string of `base-flamm.yaml`: the `&params` folded block scalar, folded the way
+/// YAML folds it.
+fn manifest_params() -> String {
+    let manifest = include_str!("../base-flamm.yaml");
+    let block = manifest
+        .split_once("&params >-\n")
+        .expect("params anchor")
+        .1;
+    // The folded scalar as YAML folds it: every line of the block, joined by one space.
+    block
+        .lines()
+        .take_while(|l| l.starts_with("    "))
+        .map(|l| &l[4..])
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The manifest's own params, parsed: the configuration the hosted stack runs with.
+pub fn config() -> Config {
+    Config::parse(&manifest_params()).expect("manifest params parse")
+}
 
 /// `testdata/e2e_blocks.json.gz`: the tracked words at 51154965 (`seed`) and one stage per block
 /// of interest, in order (`testdata/README.md`). The package's one corpus of real Base data.
@@ -140,6 +168,67 @@ pub fn fixture(name: &str) -> Value {
     serde_json::from_str(raw).expect("fixture json")
 }
 
+/// The words store as the manifest's seeds leave it at `initialBlock - 1`: the e2e corpus' seed
+/// (`eth_getStorageAt` over every tracked word of the live pool at 51154965) restricted to the
+/// words the manifest seeds. `e2e_tests::replay` asserts the two agree in both directions (every
+/// seeded word has the chain's value there, and no other word of the sweep is non-zero), so this
+/// *is* the manifest's `words` read off the chain. The restriction is part of the fixture: the
+/// sweep's other rows are words the store must not hold (an unseeded word reads as absent, not
+/// zero), which is what makes `proxy_rotation_clears_the_old_rounds_and_reads_the_new_aggregator`
+/// see an incomplete access-list pair.
+pub fn seed_words() -> HashMap<(Address, Word), Word> {
+    let cfg = config();
+    words_map(&e2e_blocks()["seed"])
+        .into_iter()
+        .filter(|(k, _)| cfg.words.contains_key(k))
+        .collect()
+}
+
+/// `deploy:` lookup from the creation fixture's codehashes and the manifest registry.
+pub fn deployments() -> HashMap<Address, (Role, Word)> {
+    let cfg = config();
+    fixture("creation")["codehashes"]
+        .as_object()
+        .expect("codehashes")
+        .iter()
+        .filter_map(|(a, h)| {
+            let codehash = parse_word(h.as_str().unwrap()).unwrap();
+            let role = *cfg.deployments.get(&codehash)?;
+            Some((parse_address(a).unwrap(), (role, codehash)))
+        })
+        .collect()
+}
+
+/// One component's attribute changes of a transaction, by name: `(value, change type)`.
+pub fn attrs_of(
+    changes: &TransactionChanges,
+    component_id: &str,
+) -> BTreeMap<String, (Vec<u8>, i32)> {
+    changes
+        .entity_changes
+        .iter()
+        .find(|e| e.component_id == component_id)
+        .map(|e| {
+            e.attributes
+                .iter()
+                .map(|a| (a.name.clone(), (a.value.clone(), a.change)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A json list of logs, from ordinal `first_ordinal`; an absent list is no logs.
+pub fn logs(list: &Value, first_ordinal: u64) -> Vec<Log> {
+    list.as_array()
+        .map(|logs| {
+            logs.iter()
+                .enumerate()
+                .map(|(i, l)| log(first_ordinal + i as u64, l))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn hex_bytes(v: &Value) -> Vec<u8> {
     let s = v.as_str().expect("hex string");
     hex::decode(s.strip_prefix("0x").unwrap_or(s)).expect("hex")
@@ -193,7 +282,8 @@ pub fn storage_changes(diffs: &Value, first_ordinal: u64) -> Vec<StorageChange> 
         .map(|(i, d)| StorageChange {
             address: hex_bytes(&d["address"]),
             key: hex_bytes(&d["slot"]),
-            old_value: hex_bytes(&d["old"]),
+            // the e2e stages record no `old` for a word whose first write this is
+            old_value: if d["old"].is_string() { hex_bytes(&d["old"]) } else { Vec::new() },
             new_value: hex_bytes(&d["new"]),
             ordinal: first_ordinal + i as u64,
         })

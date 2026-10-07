@@ -32,18 +32,18 @@ use std::{
 };
 
 use serde_json::{json, Value};
-use substreams_ethereum::pb::eth::v2::{Block, Log, StorageChange, TransactionTrace};
+use substreams_ethereum::pb::eth::v2::{Block, TransactionTrace};
 use tycho_substreams::prelude::{BlockChanges, ChangeType, ProtocolComponent};
 
 use crate::{
     config::Config,
     flamm::{
         feeds,
-        keys::{self, hex_address, hex_word, parse_address, parse_word, Address, Word},
+        keys::{self, hex_address, hex_word, parse_address, Address, Word},
         statics, PoolConfig, Role,
     },
     modules::{components_in_block, protocol_changes, tracked_writes},
-    testdata::{self, hex_bytes, hex_u64},
+    testdata::{self, config, hex_bytes, hex_u64},
 };
 
 const POOL: &str = "0xc0fdcb1799ccc2cebaa1fe247157b0df33d57572";
@@ -66,72 +66,6 @@ fn committed_stream() -> Value {
     .expect("e2e_stream.json")
 }
 
-fn manifest_params() -> String {
-    let manifest = include_str!("../base-flamm.yaml");
-    let block = manifest
-        .split_once("&params >-\n")
-        .expect("params anchor")
-        .1;
-    // The folded scalar as YAML folds it: every line of the block, joined by one space.
-    block
-        .lines()
-        .take_while(|l| l.starts_with("    "))
-        .map(|l| &l[4..])
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn config() -> Config {
-    Config::parse(&manifest_params()).expect("manifest params parse")
-}
-
-fn word_of(v: &Value) -> Word {
-    parse_word(v.as_str().expect("word")).expect("word")
-}
-
-fn address_of(v: &Value) -> Address {
-    parse_address(v.as_str().expect("address")).expect("address")
-}
-
-/// `{address, slot, value}` rows as a word map.
-fn word_map(list: &Value) -> HashMap<(Address, Word), Word> {
-    list.as_array()
-        .expect("word rows")
-        .iter()
-        .map(|w| ((address_of(&w["address"]), word_of(&w["slot"])), word_of(&w["value"])))
-        .collect()
-}
-
-/// A stage's `writes` (`{address, slot, old, new}`) as storage changes from `first_ordinal`.
-fn writes(list: &Value, first_ordinal: u64) -> Vec<StorageChange> {
-    list.as_array()
-        .expect("writes")
-        .iter()
-        .enumerate()
-        .map(|(i, w)| StorageChange {
-            address: hex_bytes(&w["address"]),
-            key: hex_bytes(&w["slot"]),
-            old_value: w["old"]
-                .as_str()
-                .map(|s| hex::decode(s.trim_start_matches("0x")).unwrap())
-                .unwrap_or_default(),
-            new_value: hex_bytes(&w["new"]),
-            ordinal: first_ordinal + i as u64,
-        })
-        .collect()
-}
-
-fn logs_of(list: &Value) -> Vec<Log> {
-    list.as_array()
-        .map(|logs| {
-            logs.iter()
-                .enumerate()
-                .map(|(i, l)| testdata::log(1000 + i as u64, l))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn header_block(header: &Value, txs: Vec<TransactionTrace>) -> Block {
     testdata::block(
         hex_u64(&header["number"]),
@@ -152,7 +86,7 @@ fn catchup_block(header: &Value, diff: &Value) -> Block {
         to: vec![0; 20],
         input: vec![],
         logs: vec![],
-        storage_changes: writes(diff, 1),
+        storage_changes: testdata::storage_changes(diff, 1),
         code_changes: vec![],
         create: false,
     });
@@ -182,8 +116,8 @@ fn stage_block(stage: &Value) -> Block {
         from: hex_bytes(&tx["from"]),
         to: if create { vec![] } else { hex_bytes(&tx["to"]) },
         input: hex_bytes(&tx["input"]),
-        logs: logs_of(&tx["logs"]),
-        storage_changes: writes(&stage["writes"], 1),
+        logs: testdata::logs(&tx["logs"], 1000),
+        storage_changes: testdata::storage_changes(&stage["writes"], 1),
         code_changes,
         create,
     };
@@ -532,7 +466,7 @@ struct Replayed {
 fn replay() -> (Indexer, Vec<Replayed>) {
     let fx = testdata::e2e_blocks();
     let cfg = config();
-    let seed = word_map(&fx["seed"]);
+    let seed = testdata::words_map(&fx["seed"]);
     // The universe at initialBlock - 1 is the manifest's `words`: every seeded word has the
     // seeded value and nothing else is non-zero.
     for (key, value) in &cfg.words {
@@ -578,7 +512,7 @@ fn replay() -> (Indexer, Vec<Replayed>) {
         // word (`state_after`, `eth_getStorageAt` at the block): a word the store lacks reads
         // as zero for a FLAMM-owned contract and as the seed otherwise.
         if let Some(state) = stage.get("state_after") {
-            for (key, value) in word_map(state) {
+            for (key, value) in testdata::words_map(state) {
                 let held = idx
                     .words
                     .get(&key)
@@ -610,7 +544,7 @@ fn e2e_deployments_are_recorded_from_the_creators_blocks() {
             continue;
         }
         for (address, c) in r.stage["codes"].as_object().unwrap() {
-            let codehash = word_of(&c["codehash"]);
+            let codehash = testdata::word(&c["codehash"]);
             match idx.cfg.deployments.get(&codehash) {
                 Some(role) => {
                     expected.insert(address.clone(), *role);
@@ -644,7 +578,7 @@ fn e2e_deployments_are_recorded_from_the_creators_blocks() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|w| address_of(&w["address"]) == hook)
+        .filter(|w| testdata::address(&w["address"]) == hook)
         .count();
     assert!(hook_writes >= 20, "{hook_writes} hook words written at its deployment");
     assert!(idx

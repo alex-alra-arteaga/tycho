@@ -324,9 +324,10 @@ fails at simulation prints the component, direction and size (the local replay's
 same quotes from the same rows, so a failure there is a difference between the hosted stream and the fold of
 the recorded storage diffs, which `e2e_stream_fixture_is_the_package_output` pins).
 
-`abi/FLAMMFactory.json` is the factory's `PoolCreated` event and `createPool` function, extracted from the
-`blockend` build artifacts; the tests derive the topic and selector from it and check them against the constants
-in `src/flamm/calldata.rs` (no abigen: the calldata is decoded with explicit `ethabi` types).
+There is no abigen and no committed ABI: `src/flamm/calldata.rs` pins the canonical `PoolCreated` and
+`createPool` signatures as string constants, decodes with explicit `ethabi` types, and
+`signatures_hash_to_the_pinned_topic_and_selector` asserts the pinned topic and selector are the keccak of
+those strings.
 
 Build: `cargo build --target wasm32-unknown-unknown --release -p base-flamm`, then `substreams pack
 base-flamm.yaml`.

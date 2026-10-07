@@ -294,3 +294,19 @@ fn topic_address(topic: &[u8]) -> Result<Address> {
     }
     Ok(crate::flamm::keys::address_in_word(topic))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        keccak256, CREATE_POOL_SELECTOR, CREATE_POOL_SIGNATURE, POOL_CREATED_SIGNATURE,
+        POOL_CREATED_TOPIC,
+    };
+
+    /// The two pinned constants are the hashes of the signatures written above them, so the
+    /// canonical ABI tuples the factory declares are what the decoders match on.
+    #[test]
+    fn signatures_hash_to_the_pinned_topic_and_selector() {
+        assert_eq!(keccak256(POOL_CREATED_SIGNATURE.as_bytes()), POOL_CREATED_TOPIC);
+        assert_eq!(keccak256(CREATE_POOL_SIGNATURE.as_bytes())[..4], CREATE_POOL_SELECTOR);
+    }
+}
