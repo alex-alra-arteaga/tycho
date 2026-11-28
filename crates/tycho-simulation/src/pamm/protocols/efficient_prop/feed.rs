@@ -444,8 +444,9 @@ impl EfficientPropFeedBuilder {
     ///
     /// # The load on the node
     ///
-    /// A poll is three HTTP requests (four where a print lapses within the book's life), but a node
-    /// meters each JSON-RPC call inside them. For `n` listings, each side sampled at about 16 sizes
+    /// A poll is the latest header and three HTTP requests (four where a print lapses within the
+    /// book's life), but a node meters each JSON-RPC call inside them. For `n` listings, each
+    /// side sampled at about 16 sizes
     /// (32 door quotes a listing; a side on a depth post adds one for each rung boundary its walk
     /// crosses, at most ten, twenty where a standing word may refill it), a poll makes:
     /// - `2 + 7n` `eth_getStorageAt` calls: the front's implementation slot twice, and each
@@ -482,6 +483,12 @@ impl EfficientPropFeedBuilder {
     /// and where a side of it may route, a request before the doors' asks its door at the read's
     /// block across its token's scale, how far the route reaches. Every listing's pool is asked
     /// its two balances beside the at-block quotes.
+    ///
+    /// A poll finding the head its last read was made at (its number and hash), the same listings
+    /// scanned and that read's life still covering what its books are served for, is the latest
+    /// header alone, one call, and publishes that read's books again, their deadlines made from
+    /// the wall clock then. On Base that is up to seven of the eight polls of a 2 s block at 250
+    /// ms, all but the poll that reads it. A read whose node left a word unanswered is not kept.
     ///
     /// One listing with a premium window closing within the life, reading no print, makes 13 calls
     /// a poll, 7 `eth_getStorageAt` and 6 `eth_call`, which
@@ -875,6 +882,7 @@ impl EfficientPropBookSource {
                         .assembler
                         .landing_ms
                         .saturating_add(self.assembler.min_side_ms()),
+                    served_ms: self.served_ms,
                 },
             )
             .await?;
@@ -2124,8 +2132,8 @@ mod tests {
     /// 3.0, 3.2, 3.4 and 3.6 s. A print lapsing so soon that no route could be sent in and land
     /// is left out without it.
     #[rstest]
-    #[case::lapsing_within_the_life(3_100, 1, 4, 16)]
-    #[case::lapsing_too_soon(1_100, 0, 3, 11)]
+    #[case::lapsing_within_the_life(3_100, 1, 5, 16)]
+    #[case::lapsing_too_soon(1_100, 0, 4, 11)]
     #[tokio::test]
     async fn a_print_lapsing_within_the_life_is_asked_block_by_block(
         #[case] print_left_ms: u64,
@@ -3311,7 +3319,7 @@ mod tests {
             .books;
 
         assert_eq!(books.len(), 1);
-        assert_eq!(server.request_count(), 3);
+        assert_eq!(server.request_count(), 4);
         assert_eq!(calls.load(Ordering::SeqCst), eth_calls);
     }
 
@@ -3982,7 +3990,10 @@ mod tests {
     /// No later poll can succeed against a deployment that is not the one configured.
     #[rstest]
     #[case::an_upgraded_front(
-        |node: &mut FakeNode| node.implementation = Address::repeat_byte(0x99),
+        |node: &mut FakeNode| {
+            node.implementation = Address::repeat_byte(0x99);
+            node.implementation_by_hash = Some(Address::repeat_byte(0x99));
+        },
         "implementation"
     )]
     #[case::another_chain(|node: &mut FakeNode| node.chain_id = 1, "chain 1")]
@@ -4102,7 +4113,8 @@ mod tests {
 
         assert_eq!(result.is_ok(), served, "{result:?}");
         if !served {
-            assert_eq!(server.request_count(), 1);
+            // The latest header, then the first request.
+            assert_eq!(server.request_count(), 2);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             assert!(result
                 .unwrap_err()
@@ -4184,7 +4196,7 @@ mod tests {
         assert_eq!(feed.feed_config.poll_interval, Duration::from_secs(1));
     }
 
-    /// A poll is three requests, however many doors it samples.
+    /// A poll that reads is the latest header and three requests, however many doors it samples.
     #[tokio::test]
     async fn a_poll_reads_the_chain_in_three_requests() {
         let node = FakeNode::new(
@@ -4202,7 +4214,7 @@ mod tests {
             .books;
 
         assert_eq!(books.len(), 12);
-        assert_eq!(server.request_count(), 3);
+        assert_eq!(server.request_count(), 4);
     }
 
     /// A door answers its `FRONT`, `LISTING` and `BASE` once: a later poll, at another head, asks
@@ -4290,6 +4302,82 @@ mod tests {
             2
         );
         assert_eq!(immutables.load(Ordering::SeqCst), 18, "only the other's door is asked again");
+    }
+
+    /// A poll finding the head the last read was made at, the same listings scanned and the read
+    /// still covering its books' service, asks the node its latest header alone and publishes
+    /// that read's books again; a new head, or a poll past the read's cover, reads again.
+    #[tokio::test]
+    async fn a_poll_at_the_head_it_has_read_asks_the_header_alone() {
+        let node = FakeNode::new(vec![FakeListing::weth_usdc(1)]);
+        let (eth_calls, storage, headers) = (
+            Arc::clone(&node.eth_calls),
+            Arc::clone(&node.storage_reads),
+            Arc::clone(&node.latest_headers),
+        );
+        let start = node.timestamp * 1000;
+        let wall = Arc::new(AtomicU64::new(start));
+        let node = Arc::new(std::sync::Mutex::new(node));
+        let server = FakeNode::spawn_shared(Arc::clone(&node)).await;
+        let mut source = source(&server.url(), book_config(), start);
+        source.clock = Arc::new({
+            let wall = Arc::clone(&wall);
+            move || wall.load(Ordering::SeqCst)
+        });
+        let reads = || (eth_calls.load(Ordering::SeqCst), storage.load(Ordering::SeqCst));
+
+        let first = source.fetch().await.unwrap().books;
+        assert_eq!(first.len(), 1);
+        assert_eq!(server.request_count(), 4);
+        assert_eq!(headers.load(Ordering::SeqCst), 1);
+        // The first poll found a listing, so the next scans one past it: that one reads again.
+        source.fetch().await.unwrap();
+        let (read, requests) = (reads(), server.request_count());
+        assert_eq!(headers.load(Ordering::SeqCst), 2);
+
+        wall.store(start + 1_000, Ordering::SeqCst);
+        let again = source.fetch().await.unwrap().books;
+
+        assert_eq!(again.keys().collect::<BTreeSet<_>>(), first.keys().collect());
+        assert_eq!(reads(), read, "a poll at the same head read the chain");
+        assert_eq!(server.request_count(), requests + 1);
+        assert_eq!(headers.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            source
+                .reader
+                .reuses
+                .load(Ordering::SeqCst),
+            1
+        );
+
+        // Past the read's cover its books could not be served and land, so the head is read again.
+        wall.store(start + 1_900, Ordering::SeqCst);
+        source.fetch().await.unwrap();
+        assert_ne!(reads(), read);
+        assert_eq!(
+            source
+                .reader
+                .reuses
+                .load(Ordering::SeqCst),
+            1
+        );
+
+        // A new head is read again.
+        let read = reads();
+        {
+            let mut node = node.lock().unwrap();
+            node.block += 1;
+            node.head_hash = Some(B256::repeat_byte(0xb2));
+        }
+        source.fetch().await.unwrap();
+        assert_ne!(reads(), read);
+        assert_eq!(
+            source
+                .reader
+                .reuses
+                .load(Ordering::SeqCst),
+            1
+        );
     }
 
     #[rstest]
@@ -4590,6 +4678,7 @@ mod tests {
                         .assembler
                         .landing_ms
                         .saturating_add(MIN_SIDE_SERVED_MS),
+                    served_ms: source.served_ms,
                 },
             )
             .await

@@ -391,6 +391,9 @@ pub(super) struct Hold {
     pub for_ms: u64,
     pub max_lag_secs: u64,
     pub min_side_ms: u64,
+    /// How long past a poll's end its books may be served and a route priced from them land, ms:
+    /// a read of an earlier poll is kept for this poll only where its life still covers that.
+    pub served_ms: u64,
 }
 
 /// What one side of a listing reads from its depth word: when it runs out, how fast its levels
@@ -1259,6 +1262,51 @@ struct LatestHead {
     parent_hash: Option<B256>,
 }
 
+/// What a kept read of a chain whose makers store their words (Base) was made at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReadKey {
+    number: u64,
+    hash: B256,
+    /// The highest listing id the read scanned to.
+    scan_to: u32,
+    /// The end of the read's life on the front's clock, ms.
+    until_ms: u64,
+}
+
+/// A read kept for the polls that find its head again.
+#[derive(Debug, Clone)]
+struct BaseSampled {
+    key: ReadKey,
+    read: DoorsRead,
+}
+
+/// How long before the end of a read's service a poll may still be answered from it, ms: the
+/// time that poll's own header call may take.
+const REUSE_MARGIN_MS: u64 = 250;
+
+/// Whether a poll at the head `pinned` (its number and hash) scanning to `scan_to` is answered
+/// from the read made at `kept`: the same block, at least the listings scanned, and the kept read's
+/// life still covering what its books are served and land for, from this poll's start
+/// `hold.from_ms`. The head names the whole read, listings, doors and quotes; what the wall
+/// clock changes (a side's deadline, a book's age) is computed when its books are made.
+fn reuses_read(
+    kept: Option<ReadKey>,
+    pinned: Option<(u64, B256)>,
+    scan_to: u32,
+    hold: &Hold,
+) -> bool {
+    let (Some(kept), Some((number, hash))) = (kept, pinned) else {
+        return false;
+    };
+    kept.number == number &&
+        kept.hash == hash &&
+        kept.scan_to >= scan_to &&
+        hold.from_ms
+            .saturating_add(hold.served_ms)
+            .saturating_add(REUSE_MARGIN_MS) <=
+            kept.until_ms
+}
+
 /// The calls and storage words of a next-block read's second request (see
 /// [`DoorsReader::take_next_block`]), as the last read built them: the first request at a head
 /// the reader has not read yet carries them, so that a read finding the same listings there asks
@@ -1464,6 +1512,9 @@ pub(super) struct DoorsReader {
     /// the factory's CREATE2 child of its listing id with its code hash checked, so its `FRONT`,
     /// `LISTING` and `BASE` never change, and it is asked them once.
     known_doors: Arc<Mutex<HashMap<Address, Address>>>,
+    /// On a chain whose makers store their words (Base), the last read whole at a head named by
+    /// its hash: a poll finding that head again is answered from it (see [`reuses_read`]).
+    base_sampled: Arc<Mutex<Option<BaseSampled>>>,
 }
 
 impl DoorsReader {
@@ -1515,6 +1566,7 @@ impl DoorsReader {
             last_head: Arc::default(),
             next_request: Arc::default(),
             known_doors: Arc::default(),
+            base_sampled: Arc::default(),
         }
     }
 
@@ -1550,6 +1602,11 @@ impl DoorsReader {
     /// is known before it is deployed. So does a node lagging the poll's start by more than
     /// `hold.max_lag_secs`, at the first request, before any door is asked: the asks of a print's
     /// life run from the block to the book's end, one more for each second the node lags.
+    ///
+    /// On a chain whose makers store their words (Base) the listings are read at the latest
+    /// header's hash ([`Self::read_head`]), and a read whole at that head is kept: a poll finding
+    /// the same head, at least the same listings scanned and the kept read's life still covering
+    /// its books' service ([`reuses_read`]) is answered it, asking the header alone.
     pub(super) async fn read(
         &self,
         scan_to: u32,
@@ -1561,9 +1618,7 @@ impl DoorsReader {
                 .read_next_block(next_block, scan_to, decimals, hold)
                 .await;
         }
-        let (clock, listings, highest_listing) = self
-            .read_listings(scan_to, BlockId::latest(), None)
-            .await?;
+        let HeadRead { clock, listings, highest_listing, pinned } = self.read_head(scan_to).await?;
         telemetry::record_answer_age(answer_age(hold.from_ms, clock.timestamp));
         let started = hold.from_ms / 1000;
         if started >
@@ -1572,6 +1627,22 @@ impl DoorsReader {
                 .saturating_add(hold.max_lag_secs)
         {
             return Err(lagging(started, clock.number, clock.timestamp));
+        }
+        {
+            let kept = self
+                .base_sampled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pinned = pinned.map(|head| (head.number, head.hash));
+            if reuses_read(kept.as_ref().map(|kept| kept.key), pinned, scan_to, &hold) {
+                #[cfg(test)]
+                self.reuses
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(kept
+                    .as_ref()
+                    .map(|kept| kept.read.clone())
+                    .expect("a kept read is reused"));
+            }
         }
         let start_ms = hold.from_ms.max(clock.ms);
         let until_ms = start_ms.saturating_add(hold.for_ms);
@@ -1630,13 +1701,13 @@ impl DoorsReader {
                 Some((listing, probes))
             })
             .collect();
-        let (open, _) = self
+        let (open, opened) = self
             .open_doors(&served, block, None)
             .await?;
         let doors = self
             .sample(&open, &clock, start_ms, until_ms, hold.min_side_ms)
             .await?;
-        Ok(DoorsRead {
+        let read = DoorsRead {
             block_number: clock.number,
             timestamp: clock.timestamp,
             #[cfg(test)]
@@ -1649,7 +1720,19 @@ impl DoorsReader {
             answered_at_block: true,
             outcome: PollOutcome::Sampled,
             head_ms: None,
-        })
+        };
+        // Kept for the polls at this head only where the head is named by its hash and the node
+        // answered every word asked: an unread word is asked again by the next poll.
+        *self
+            .base_sampled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = pinned
+            .filter(|_| opened == Answered::Whole)
+            .map(|pinned| BaseSampled {
+                key: ReadKey { number: pinned.number, hash: pinned.hash, scan_to, until_ms },
+                read: read.clone(),
+            });
+        Ok(read)
     }
 
     /// A read on a chain whose builders land makers' updates in the block that fills them: there a
@@ -5394,4 +5477,33 @@ mod tests {
 
         assert_eq!(taken, split.map(|(immutables, fills)| (immutables, fills, answered - door)));
     }
+
+    /// A poll is answered from a kept read only at its block, with the listings it scanned, while
+    /// the read's life still covers what its books are served for from the poll's start.
+    #[rstest]
+    #[case::the_same_head(Some(KEPT), Some((7, B256::repeat_byte(1))), 3, 1_000, true)]
+    #[case::the_last_moment(Some(KEPT), Some((7, B256::repeat_byte(1))), 3, 2_750, true)]
+    #[case::past_it(Some(KEPT), Some((7, B256::repeat_byte(1))), 3, 2_751, false)]
+    #[case::the_next_block(Some(KEPT), Some((8, B256::repeat_byte(1))), 3, 1_000, false)]
+    #[case::a_replaced_block(Some(KEPT), Some((7, B256::repeat_byte(2))), 3, 1_000, false)]
+    #[case::more_listings_scanned(Some(KEPT), Some((7, B256::repeat_byte(1))), 4, 1_000, false)]
+    #[case::fewer_listings_scanned(Some(KEPT), Some((7, B256::repeat_byte(1))), 2, 1_000, true)]
+    #[case::no_hash_named(Some(KEPT), None, 3, 1_000, false)]
+    #[case::nothing_kept(None, Some((7, B256::repeat_byte(1))), 3, 1_000, false)]
+    fn a_poll_is_answered_from_the_read_at_its_head_while_it_covers_the_poll(
+        #[case] kept: Option<ReadKey>,
+        #[case] pinned: Option<(u64, B256)>,
+        #[case] scan_to: u32,
+        #[case] from_ms: u64,
+        #[case] reuses: bool,
+    ) {
+        let hold =
+            Hold { from_ms, for_ms: 8_000, max_lag_secs: 4, min_side_ms: 0, served_ms: 6_000 };
+
+        assert_eq!(reuses_read(kept, pinned, scan_to, &hold), reuses);
+    }
+
+    /// A kept read: block 7, three listings scanned, living until 9 s.
+    const KEPT: ReadKey =
+        ReadKey { number: 7, hash: B256::repeat_byte(1), scan_to: 3, until_ms: 9_000 };
 }
