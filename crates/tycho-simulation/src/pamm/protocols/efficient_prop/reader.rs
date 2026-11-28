@@ -1460,6 +1460,10 @@ pub(super) struct DoorsReader {
     last_head: Arc<AtomicU64>,
     /// The last next-block read's second request (see [`NextRequest`]).
     next_request: Arc<Mutex<Option<NextRequest>>>,
+    /// Each door found to be the front's door of its listing, with the base it names: a door is
+    /// the factory's CREATE2 child of its listing id with its code hash checked, so its `FRONT`,
+    /// `LISTING` and `BASE` never change, and it is asked them once.
+    known_doors: Arc<Mutex<HashMap<Address, Address>>>,
 }
 
 impl DoorsReader {
@@ -1510,7 +1514,17 @@ impl DoorsReader {
             head_first_from: Arc::default(),
             last_head: Arc::default(),
             next_request: Arc::default(),
+            known_doors: Arc::default(),
         }
+    }
+
+    /// Forgets the doors found to be the front's, so that the next read asks their immutables.
+    #[cfg(test)]
+    pub(super) fn forget_doors(&self) {
+        self.known_doors
+            .lock()
+            .expect("known doors lock")
+            .clear();
     }
 
     /// The front's proxy.
@@ -2635,19 +2649,39 @@ impl DoorsReader {
     /// refuses or ignores the next block's overrides fails the read. Beside the doors, whether
     /// the node answered every word asked for them: an unread session, sources or live-source
     /// word leaves its listing out of this read alone ([`Answered`]).
+    ///
+    /// A door that answered its front, listing and base as this front's door of its listing is
+    /// not asked them again: they never change, so it is asked its two fills alone.
     async fn open_doors(
         &self,
         listings: &[(Listing, (U256, U256))],
         block: BlockId,
         next: Option<(&FrontClock, &serde_json::Value)>,
     ) -> Result<(Vec<OpenDoor>, Answered), FeedError> {
+        // The doors already found to be the front's, which are not asked their immutables again.
+        let known: Vec<Option<Address>> = {
+            let known = self
+                .known_doors
+                .lock()
+                .expect("known doors lock");
+            listings
+                .iter()
+                .map(|(listing, _)| known.get(&listing.door).copied())
+                .collect()
+        };
         let mut calls = Vec::with_capacity(listings.len() * DOOR_CALLS);
         let mut slots = Vec::with_capacity(listings.len() * RECORD_WORDS);
-        for (Listing { id, token0, token1, door, .. }, (probe0, probe1)) in listings {
+        for ((Listing { id, token0, token1, door, .. }, (probe0, probe1)), known) in
+            listings.iter().zip(&known)
+        {
+            if known.is_none() {
+                calls.extend([
+                    call(*door, FRONTCall {}.abi_encode()),
+                    call(*door, LISTINGCall {}.abi_encode()),
+                    call(*door, BASECall {}.abi_encode()),
+                ]);
+            }
             calls.extend([
-                call(*door, FRONTCall {}.abi_encode()),
-                call(*door, LISTINGCall {}.abi_encode()),
-                call(*door, BASECall {}.abi_encode()),
                 call(
                     *door,
                     quoteFillableCall { tokenIn: *token0, tokenOut: *token1, amountIn: *probe0 }
@@ -2693,12 +2727,15 @@ impl DoorsReader {
         let mut words = words.into_iter();
         let mut open = Vec::new();
         let mut answered = Answered::Whole;
-        for ((listing, (probe0, probe1)), answers) in listings
-            .iter()
-            .zip(answers.chunks(DOOR_CALLS))
-        {
+        let mut rest = answers.as_slice();
+        for ((listing, (probe0, probe1)), known) in listings.iter().zip(&known) {
+            let Some(DoorAnswers { immutables, fills: [fill0, fill1], rest: after }) =
+                split_door(rest, known.is_some())
+            else {
+                return Err(FeedError::Parsing("multicall answered too few calls".into()));
+            };
+            rest = after;
             let (
-                [front, id, base, fill0, fill1],
                 Some(settings),
                 Some(controls),
                 Some(session),
@@ -2707,7 +2744,6 @@ impl DoorsReader {
                 Some(bid_board),
                 Some(ask_board),
             ) = (
-                answers,
                 words.next(),
                 words.next(),
                 words.next(),
@@ -2780,31 +2816,40 @@ impl DoorsReader {
                 );
                 continue;
             }
-            if front.returnData.is_empty() {
-                debug!(listing = listing.id, door = %listing.door, "listing has no door yet");
-                continue;
-            }
-            let front = decode::<FRONTCall>(front, "door's FRONT");
-            let id = decode::<LISTINGCall>(id, "door's LISTING");
-            let base = decode::<BASECall>(base, "door's BASE");
-            let (Ok(front), Ok(id), Ok(base)) = (front, id, base) else {
-                warn!(
-                    listing = listing.id,
-                    door = %listing.door,
-                    "skipping door that does not answer as one"
-                );
-                continue;
+            let base = match (known, immutables) {
+                (Some(base), _) => *base,
+                (None, Some([front, id, base])) => {
+                    if front.returnData.is_empty() {
+                        debug!(listing = listing.id, door = %listing.door, "listing has no door yet");
+                        continue;
+                    }
+                    let front = decode::<FRONTCall>(front, "door's FRONT");
+                    let id = decode::<LISTINGCall>(id, "door's LISTING");
+                    let base = decode::<BASECall>(base, "door's BASE");
+                    let (Ok(front), Ok(id), Ok(base)) = (front, id, base) else {
+                        warn!(
+                            listing = listing.id,
+                            door = %listing.door,
+                            "skipping door that does not answer as one"
+                        );
+                        continue;
+                    };
+                    if front != self.front || id != U24::from(listing.id) {
+                        warn!(
+                            listing = listing.id,
+                            door = %listing.door,
+                            %front,
+                            door_listing = %id,
+                            "skipping door that names another front or listing"
+                        );
+                        continue;
+                    }
+                    base
+                }
+                (None, None) => {
+                    return Err(FeedError::Parsing("multicall answered too few calls".into()))
+                }
             };
-            if front != self.front || id != U24::from(listing.id) {
-                warn!(
-                    listing = listing.id,
-                    door = %listing.door,
-                    %front,
-                    door_listing = %id,
-                    "skipping door that names another front or listing"
-                );
-                continue;
-            }
             // A chain whose builders land makers' updates has no guarded source: its sources are
             // price contracts, and no lane holds a replaced print there.
             if next.is_some() && guarded_lane.is_some() {
@@ -2823,6 +2868,12 @@ impl DoorsReader {
                         });
                 OpenSide { fillable, fillable_out, probe, view, board }
             };
+            if known.is_none() && (base == listing.token0 || base == listing.token1) {
+                self.known_doors
+                    .lock()
+                    .expect("known doors lock")
+                    .insert(listing.door, base);
+            }
             // `fill0` sells token0 and `fill1` token1: the bid's is the one selling the base.
             let (quote, bid, ask) = if base == listing.token0 {
                 (
@@ -4556,6 +4607,32 @@ pub(super) fn lagging(now: u64, number: u64, timestamp: u64) -> FeedError {
 /// Calls per listing in the second request: see [`DoorsReader::open_doors`].
 const DOOR_CALLS: usize = 5;
 
+/// Calls per listing in the second request once its door is known: its two `quoteFillable`s.
+const FILL_CALLS: usize = 2;
+
+/// One door's answers, as [`split_door`] takes them from the leading answers of a request.
+struct DoorAnswers<'a> {
+    /// Its `FRONT`, `LISTING` and `BASE`, unless its immutables were known and not asked.
+    immutables: Option<[&'a Call3Result; 3]>,
+    /// Its two fills.
+    fills: [&'a Call3Result; 2],
+    /// The answers after them: the next door's.
+    rest: &'a [Call3Result],
+}
+
+/// The leading answers of `answers` that are one door's: its `FRONT`, `LISTING` and `BASE` unless
+/// its immutables are `known`, then its two fills. `None` where there are too few.
+fn split_door(answers: &[Call3Result], known: bool) -> Option<DoorAnswers<'_>> {
+    let (immutables, answers) = if known {
+        (None, answers)
+    } else {
+        let ([front, id, base], answers) = answers.split_first_chunk::<3>()?;
+        (Some([front, id, base]), answers)
+    };
+    let ([fill0, fill1], rest) = answers.split_first_chunk::<FILL_CALLS>()?;
+    Some(DoorAnswers { immutables, fills: [fill0, fill1], rest })
+}
+
 /// Words of each listing's record read in the second request: its settings, controls, session,
 /// source and live-source words, and its two board words.
 const RECORD_WORDS: usize = 7;
@@ -5289,5 +5366,32 @@ mod tests {
     fn the_door_selectors_are_ipropamms() {
         assert_eq!(quoteCall::SELECTOR, [0xb6, 0x46, 0x63, 0x84]);
         assert_eq!(quoteFillableCall::SELECTOR, [0x7a, 0xe8, 0x48, 0x25]);
+    }
+
+    /// A door not yet known has its three immutables and its two fills split from its answers,
+    /// one known its fills alone, and what follows is the next door's; too few answers split
+    /// nothing.
+    #[rstest]
+    #[case::unknown(false, 7, Some((3, 2)))]
+    #[case::known(true, 4, Some((0, 2)))]
+    #[case::unknown_too_few(false, 4, None)]
+    #[case::known_too_few(true, 1, None)]
+    fn a_door_is_split_from_its_answers_by_what_was_asked_of_it(
+        #[case] known: bool,
+        #[case] answered: usize,
+        #[case] split: Option<(usize, usize)>,
+    ) {
+        let answers = vec![Call3Result { success: true, returnData: AlloyBytes::new() }; answered];
+        let taken = split_door(&answers, known).map(|door| {
+            (
+                door.immutables
+                    .map_or(0, |immutables| immutables.len()),
+                door.fills.len(),
+                door.rest.len(),
+            )
+        });
+        let door = if known { FILL_CALLS } else { DOOR_CALLS };
+
+        assert_eq!(taken, split.map(|(immutables, fills)| (immutables, fills, answered - door)));
     }
 }

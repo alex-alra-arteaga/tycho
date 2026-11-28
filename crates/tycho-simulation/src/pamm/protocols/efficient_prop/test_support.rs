@@ -1094,6 +1094,8 @@ pub(super) struct FakeNode {
     pub door_quotes: Arc<AtomicUsize>,
     /// How many of those it was asked at a block named by its number, not its hash.
     pub door_quotes_by_number: Arc<AtomicUsize>,
+    /// How many of a door's immutables (`FRONT`, `LISTING` and `BASE`) the node has answered.
+    pub door_immutables: Arc<AtomicUsize>,
     /// The runtime code of every implementation the front's slot may name.
     pub implementation_code: Vec<u8>,
     /// How many times the node was asked an account's code.
@@ -1331,6 +1333,7 @@ impl FakeNode {
             implementation_by_hash: None,
             door_quotes: Arc::default(),
             door_quotes_by_number: Arc::default(),
+            door_immutables: Arc::default(),
             implementation_code: IMPLEMENTATION_CODE.to_vec(),
             code_reads: Arc::default(),
             gas_price_wei: BNB_GAS_PRICE_WEI,
@@ -1999,6 +2002,10 @@ impl FakeNode {
         };
         if !listing.opened {
             return Some(Vec::new());
+        }
+        if [FRONTCall::SELECTOR, LISTINGCall::SELECTOR, BASECall::SELECTOR].contains(&selector) {
+            self.door_immutables
+                .fetch_add(1, Ordering::SeqCst);
         }
         Some(match selector {
             FRONTCall::SELECTOR => listing.door_front.abi_encode(),

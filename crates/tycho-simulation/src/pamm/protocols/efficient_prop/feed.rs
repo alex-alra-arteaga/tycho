@@ -451,10 +451,12 @@ impl EfficientPropFeedBuilder {
     /// - `2 + 7n` `eth_getStorageAt` calls: the front's implementation slot twice, and each
     ///   listing's settings, controls, session, source, live-source and two board words;
     /// - `eth_call`s of `Multicall3.aggregate3`: `ceil((n + 24) / 48)` reading the listings,
-    ///   `ceil(5n / 48)` asking each door's front, listing, base and fills, and for the quotes
-    ///   `ceil(32n / 48)` at the read's block and `ceil(32n / 45)` under each block override: the
-    ///   life's end, and for each distinct moment a premium window closes within the life two, the
-    ///   last block before it and the first at or after it (only the sides it closes on);
+    ///   `ceil(5n / 48)` asking each door's front, listing, base and fills (`ceil(2n / 48)`, the
+    ///   fills alone, once the doors are found to be the front's: their front, listing and base
+    ///   never change), and for the quotes `ceil(32n / 48)` at the read's block and `ceil(32n /
+    ///   45)` under each block override: the life's end, and for each distinct moment a premium
+    ///   window closes within the life two, the last block before it and the first at or after it
+    ///   (only the sides it closes on);
     /// - where `p` of the listings read a price print, `ceil(4p / 45)` more under each block
     ///   override at the last block of each second of the life between the read's block and its
     ///   last, asking each of their sides two quotes: `4p` quotes for each second asked. That is
@@ -4201,6 +4203,93 @@ mod tests {
 
         assert_eq!(books.len(), 12);
         assert_eq!(server.request_count(), 3);
+    }
+
+    /// A door answers its `FRONT`, `LISTING` and `BASE` once: a later poll, at another head, asks
+    /// it its two fills alone.
+    #[tokio::test]
+    async fn a_door_is_asked_its_immutables_once() {
+        let node = FakeNode::new(vec![FakeListing::weth_usdc(1), FakeListing::weth_usdc(2)]);
+        let immutables = Arc::clone(&node.door_immutables);
+        let now = node.timestamp * 1000;
+        let node = Arc::new(std::sync::Mutex::new(node));
+        let server = FakeNode::spawn_shared(Arc::clone(&node)).await;
+        let source = source(&server.url(), book_config(), now);
+
+        let first = source.fetch().await.unwrap().books;
+        assert_eq!(immutables.load(Ordering::SeqCst), 6);
+        node.lock().unwrap().block += 1;
+        let second = source.fetch().await.unwrap().books;
+
+        assert_eq!(immutables.load(Ordering::SeqCst), 6, "a known door was asked again");
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.keys().collect::<BTreeSet<_>>(), first.keys().collect());
+    }
+
+    /// A door is known only once it answered as the front's door of its listing: one not opened
+    /// yet, and one naming another front, are asked on every poll.
+    #[tokio::test]
+    async fn a_door_not_found_to_be_the_fronts_is_asked_again() {
+        let mut unopened = FakeListing::weth_usdc(1);
+        unopened.opened = false;
+        let mut other = FakeListing::weth_usdc(2);
+        other.door_front = Address::repeat_byte(0x99);
+        let node = FakeNode::new(vec![unopened, other, FakeListing::weth_usdc(3)]);
+        let immutables = Arc::clone(&node.door_immutables);
+        let now = node.timestamp * 1000;
+        let node = Arc::new(std::sync::Mutex::new(node));
+        let server = FakeNode::spawn_shared(Arc::clone(&node)).await;
+        let source = source(&server.url(), book_config(), now);
+
+        assert_eq!(
+            source
+                .fetch()
+                .await
+                .unwrap()
+                .books
+                .len(),
+            1
+        );
+        // The unopened door answers nothing, the other's three answers name another front, and
+        // the third's three are asked once.
+        assert_eq!(immutables.load(Ordering::SeqCst), 6);
+        node.lock().unwrap().block += 1;
+        assert_eq!(
+            source
+                .fetch()
+                .await
+                .unwrap()
+                .books
+                .len(),
+            1
+        );
+        assert_eq!(immutables.load(Ordering::SeqCst), 9);
+        {
+            let mut node = node.lock().unwrap();
+            node.block += 1;
+            node.listings[0].opened = true;
+        }
+        assert_eq!(
+            source
+                .fetch()
+                .await
+                .unwrap()
+                .books
+                .len(),
+            2
+        );
+        assert_eq!(immutables.load(Ordering::SeqCst), 15);
+        node.lock().unwrap().block += 1;
+        assert_eq!(
+            source
+                .fetch()
+                .await
+                .unwrap()
+                .books
+                .len(),
+            2
+        );
+        assert_eq!(immutables.load(Ordering::SeqCst), 18, "only the other's door is asked again");
     }
 
     #[rstest]
@@ -9358,6 +9447,9 @@ mod tests {
             source
                 .highest_listing
                 .store(0, Ordering::Relaxed);
+            // The recording holds each door's request with its immutables, as a poll that has not
+            // found the door asks it.
+            source.reader.forget_doors();
             let second = published(&source).await;
 
             assert_eq!(asked, quotes_a_poll);
